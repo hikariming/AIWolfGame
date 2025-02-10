@@ -1,41 +1,9 @@
-"""
-游戏主控制器，负责整个游戏流程的控制和状态管理
-
-主要职责：
-1. 游戏初始化
-   - 加载配置文件
-   - 初始化玩家和角色
-   - 分配角色
-
-2. 游戏流程控制
-   - 管理游戏阶段（夜晚/白天）
-   - 控制发言顺序
-   - 处理投票环节
-   - 判断游戏结束条件
-
-3. 与其他模块的交互：
-   - 调用 ai_players.py 中的 AI 玩家进行决策
-   - 使用 roles.py 中定义的角色能力
-   - 通过 utils/logger.py 记录游戏过程
-   - 通过 utils/game_utils.py 使用辅助功能
-
-类设计：
-class GameController:
-    def __init__(self)
-    def initialize_game()
-    def start_game()
-    def night_phase()
-    def day_phase()
-    def voting_phase()
-    def check_game_over()
-    def announce_winner()
-""" 
-
 from typing import Dict, List, Optional
 import time
 import logging
 from .roles import BaseRole, Werewolf, Villager, RoleType
-from .ai_players import create_ai_agent, WerewolfAgent, VillagerAgent
+from .ai_players import create_ai_agent, BaseAIAgent
+import random
 
 class GameController:
     def __init__(self, config: Dict):
@@ -72,14 +40,20 @@ class GameController:
                     "role": role_type
                 }
                 
-                ai_config = self.config["ai_players"][info["ai_type"]]
+                # 获取AI配置
+                ai_type = info["ai_type"]
+                if ai_type not in self.config["ai_players"]:
+                    raise ValueError(f"未知的AI类型: {ai_type}")
+                
+                ai_config = self.config["ai_players"][ai_type]
                 self.ai_agents[player_id] = create_ai_agent(ai_config, role)
 
         # 设置狼人队友信息
         wolf_players = [pid for pid, role in self.players.items() if role.is_wolf()]
         for wolf_id in wolf_players:
-            if isinstance(self.ai_agents[wolf_id], WerewolfAgent):
-                self.ai_agents[wolf_id].team_members = [p for p in wolf_players if p != wolf_id]
+            agent = self.ai_agents[wolf_id]
+            if hasattr(agent, 'team_members'):
+                agent.team_members = [p for p in wolf_players if p != wolf_id]
 
     def run_game(self) -> None:
         """运行游戏主循环"""
@@ -117,18 +91,39 @@ class GameController:
             time.sleep(self.delay)
             
             # 狼人讨论
+            wolf_opinions = []
+            final_target = None
+            
             for wolf_id in wolves:
                 agent = self.ai_agents[wolf_id]
-                if isinstance(agent, WerewolfAgent):
-                    target_id = agent.discuss_kill(self.game_state)
+                result = agent.discuss(self.game_state)
+                
+                if result["type"] == "kill":
                     print(f"\n{self.players[wolf_id].name} 的想法：")
-                    print(f"{target_id}")
-                    time.sleep(self.delay)
+                    print(result["content"])
+                    wolf_opinions.append({
+                        "wolf": self.players[wolf_id].name,
+                        "opinion": result["content"],
+                        "target": result["target"]
+                    })
+                    if final_target is None:
+                        final_target = result["target"]
+                
+                time.sleep(self.delay)
             
-            # 取第一个狼人的决定作为最终决定
-            final_target = self.ai_agents[wolves[0]].discuss_kill(self.game_state)
-            if final_target:
+            # 显示最终决定
+            if final_target and final_target in self.players:
+                print(f"\n狼人们最终决定击杀 {self.players[final_target].name}")
                 self.kill_player(final_target, "狼人袭击")
+                
+                # 记录这次击杀到游戏历史
+                self.game_state["history"].append({
+                    "round": self.current_round,
+                    "phase": "night",
+                    "event": "wolf_kill",
+                    "opinions": wolf_opinions,
+                    "target": final_target
+                })
 
     def day_phase(self) -> None:
         """白天阶段：玩家轮流发言后进行投票"""
@@ -140,49 +135,96 @@ class GameController:
         self.discussion_phase()
         
         # 投票环节
-        print("\n=== 开始投票 ===")
-        time.sleep(self.delay)
-        
-        votes = {}
-        # 收集所有存活玩家的投票
-        for player_id, role in self.players.items():
-            if role.is_alive:
-                agent = self.ai_agents[player_id]
-                target_id = agent.discuss_vote(self.game_state)
-                votes[target_id] = votes.get(target_id, 0) + 1
-                print(f"{role.name} 投票给了 {self.players[target_id].name}")
-                time.sleep(self.delay)
-
-        # 处理投票结果
-        if votes:
-            voted_out = max(votes.items(), key=lambda x: x[1])[0]
-            print(f"\n投票结果：{self.players[voted_out].name} 被投票出局")
-            self.kill_player(voted_out, "公投出局")
+        self.voting_phase()
 
     def discussion_phase(self) -> None:
         """玩家轮流发言阶段"""
         print("\n=== 开始轮流发言 ===")
         time.sleep(self.delay)
         
-        # 按照玩家ID顺序发言
+        # 记录所有发言
+        round_speeches = []
+        
+        # 第一轮发言
         alive_players = [pid for pid, role in self.players.items() if role.is_alive]
+        print("\n【第一轮发言】")
         for player_id in alive_players:
             role = self.players[player_id]
             agent = self.ai_agents[player_id]
             
             print(f"\n{role.name} 的发言：")
-            speech = agent.discuss_vote(self.game_state)  # 使用投票讨论作为发言内容
+            speech = agent.discuss(self.game_state)
             print(speech)
             
-            # 记录发言到游戏历史
-            self.game_state["history"].append({
-                "round": self.current_round,
-                "phase": "discussion",
-                "player": player_id,
+            round_speeches.append({
+                "player": role.name,
                 "content": speech
             })
             
             time.sleep(self.delay)
+        
+        # 更新游戏状态，加入发言记录
+        self.game_state["current_discussion"] = round_speeches
+        
+        # 第二轮发言（补充发言）
+        print("\n【第二轮发言】")
+        for player_id in alive_players:
+            role = self.players[player_id]
+            agent = self.ai_agents[player_id]
+            
+            print(f"\n{role.name} 要补充吗？")
+            speech = agent.discuss(self.game_state)
+            if len(speech) > 50:  # 如果有实质性的补充
+                print(speech)
+                round_speeches.append({
+                    "player": role.name,
+                    "content": speech
+                })
+            else:
+                print("无补充发言")
+            
+            time.sleep(self.delay)
+
+    def voting_phase(self) -> None:
+        """投票环节"""
+        print("\n=== 开始投票 ===")
+        time.sleep(self.delay)
+        
+        votes = {}
+        vote_details = []
+        
+        # 收集所有存活玩家的投票
+        for player_id, role in self.players.items():
+            if role.is_alive:
+                agent = self.ai_agents[player_id]
+                target_id = agent.vote(self.game_state)
+                votes[target_id] = votes.get(target_id, 0) + 1
+                
+                vote_detail = f"{role.name} 投票给了 {self.players[target_id].name}"
+                print(vote_detail)
+                vote_details.append(vote_detail)
+                
+                time.sleep(self.delay)
+
+        # 统计投票结果
+        if votes:
+            # 找出票数最多的玩家
+            max_votes = max(votes.values())
+            most_voted = [pid for pid, count in votes.items() if count == max_votes]
+            
+            if len(most_voted) > 1:
+                print("\n出现平票！")
+                # 随机选择一个
+                voted_out = random.choice(most_voted)
+            else:
+                voted_out = most_voted[0]
+            
+            print(f"\n投票结果：")
+            for detail in vote_details:
+                print(detail)
+            print(f"\n{self.players[voted_out].name} 被投票出局")
+            
+            self.kill_player(voted_out, "公投出局")
 
     def kill_player(self, player_id: str, reason: str) -> None:
         """处理玩家死亡"""
@@ -205,7 +247,7 @@ class GameController:
                 "reason": reason
             })
             
-            print(f"\n{player.name} 被{reason}死亡")
+            print(f"\n{player.name} 被{reason}")
             time.sleep(self.delay)
 
     def check_game_over(self) -> bool:
@@ -213,7 +255,11 @@ class GameController:
         wolf_count = self.game_state["alive_count"]["werewolf"]
         villager_count = self.game_state["alive_count"]["villager"]
         
-        return wolf_count == 0 or wolf_count >= villager_count
+        if wolf_count == 0:
+            return True
+        if wolf_count >= villager_count:
+            return True
+        return False
 
     def announce_winner(self) -> None:
         """宣布游戏结果"""
