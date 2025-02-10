@@ -1,6 +1,6 @@
 {
   "game_settings": {
-    "total_players": 4,
+    "total_players": 6,
     "day_time_limit": 180,
     "night_time_limit": 60
   },
@@ -10,16 +10,21 @@
         "ai_type": "gpt-4",
         "name": "灰太狼",
         "personality": "狡猾"
+      },
+      "wolf2": {
+        "ai_type": "claude35",
+        "name": "红太狼",
+        "personality": "激进"
       }
     },
     "villager": {
       "villager1": {
-        "ai_type": "gpt-4",
+        "ai_type": "deepseek",
         "name": "张一",
         "personality": "谨慎"
       },
       "villager2": {
-        "ai_type": "gpt-4",
+        "ai_type": "gemini",
         "name": "李二",
         "personality": "积极"
       },
@@ -27,6 +32,11 @@
         "ai_type": "gpt-4",
         "name": "王三",
         "personality": "冷静"
+      },
+      "villager4": {
+        "ai_type": "claude35",
+        "name": "赵四",
+        "personality": "多疑"
       }
     }
   }
