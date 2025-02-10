@@ -4,6 +4,7 @@ import logging
 from .roles import BaseRole, Werewolf, Villager, RoleType
 from .ai_players import create_ai_agent, BaseAIAgent
 import random
+import re
 
 class GameController:
     def __init__(self, config: Dict):
@@ -137,6 +138,12 @@ class GameController:
         # 投票环节
         self.voting_phase()
 
+    def _validate_speech(self, speech: str) -> bool:
+        """验证发言是否符合要求"""
+        # 移除动作描写【】中的内容后检查发言长度
+        clean_speech = re.sub(r'【.*?】', '', speech)
+        return len(clean_speech) >= 20
+
     def discussion_phase(self) -> None:
         """玩家轮流发言阶段"""
         print("\n=== 开始轮流发言 ===")
@@ -153,17 +160,39 @@ class GameController:
             agent = self.ai_agents[player_id]
             
             print(f"\n{role.name} 的发言：")
-            speech = agent.discuss(self.game_state)
+            result = agent.discuss(self.game_state)
+            
+            # 处理不同类型的返回结果
+            if isinstance(result, dict):
+                speech = result.get("content", "")
+            else:
+                speech = result
+            
+            # 验证发言长度
+            if not self._validate_speech(speech):
+                self.logger.warning(f"{role.name} 的发言太短，要求重新发言")
+                continue
+            
             print(speech)
             
+            # 记录发言
             round_speeches.append({
                 "player": role.name,
+                "role": role.role_type.value,
+                "content": speech
+            })
+            
+            # 更新游戏状态
+            self.game_state["history"].append({
+                "round": self.current_round,
+                "phase": "discussion",
+                "player": player_id,
                 "content": speech
             })
             
             time.sleep(self.delay)
         
-        # 更新游戏状态，加入发言记录
+        # 更新游戏状态，加入当前讨论记录
         self.game_state["current_discussion"] = round_speeches
         
         # 第二轮发言（补充发言）
@@ -172,12 +201,28 @@ class GameController:
             role = self.players[player_id]
             agent = self.ai_agents[player_id]
             
-            print(f"\n{role.name} 要补充吗？")
-            speech = agent.discuss(self.game_state)
+            print(f"\n{role.name} 要补充发言吗？")
+            result = agent.discuss(self.game_state)
+            
+            # 处理不同类型的返回结果
+            if isinstance(result, dict):
+                speech = result.get("content", "")
+            else:
+                speech = result
+            
             if len(speech) > 50:  # 如果有实质性的补充
                 print(speech)
                 round_speeches.append({
                     "player": role.name,
+                    "role": role.role_type.value,
+                    "content": speech
+                })
+                
+                # 更新游戏状态
+                self.game_state["history"].append({
+                    "round": self.current_round,
+                    "phase": "discussion",
+                    "player": player_id,
                     "content": speech
                 })
             else:
@@ -194,17 +239,27 @@ class GameController:
         vote_details = []
         
         # 收集所有存活玩家的投票
-        for player_id, role in self.players.items():
-            if role.is_alive:
-                agent = self.ai_agents[player_id]
-                target_id = agent.vote(self.game_state)
+        alive_players = [pid for pid, role in self.players.items() if role.is_alive]
+        for player_id in alive_players:
+            role = self.players[player_id]
+            agent = self.ai_agents[player_id]
+            
+            # 获取投票目标
+            target_id = agent.vote(self.game_state)
+            if target_id in self.players:  # 确保投票目标有效
                 votes[target_id] = votes.get(target_id, 0) + 1
-                
                 vote_detail = f"{role.name} 投票给了 {self.players[target_id].name}"
                 print(vote_detail)
-                vote_details.append(vote_detail)
-                
-                time.sleep(self.delay)
+                vote_details.append({
+                    "voter": role.name,
+                    "voter_role": role.role_type.value,
+                    "target": self.players[target_id].name,
+                    "target_id": target_id
+                })
+            else:
+                self.logger.warning(f"无效的投票目标: {target_id}")
+            
+            time.sleep(self.delay)
 
         # 统计投票结果
         if votes:
@@ -212,18 +267,30 @@ class GameController:
             max_votes = max(votes.values())
             most_voted = [pid for pid, count in votes.items() if count == max_votes]
             
+            print("\n投票结果：")
+            for detail in vote_details:
+                print(f"{detail['voter']} 投票给了 {detail['target']}")
+            
             if len(most_voted) > 1:
                 print("\n出现平票！")
                 # 随机选择一个
                 voted_out = random.choice(most_voted)
+                print(f"随机选择了 {self.players[voted_out].name}")
             else:
                 voted_out = most_voted[0]
             
-            print(f"\n投票结果：")
-            for detail in vote_details:
-                print(detail)
             print(f"\n{self.players[voted_out].name} 被投票出局")
             
+            # 记录投票结果
+            self.game_state["history"].append({
+                "round": self.current_round,
+                "phase": "vote",
+                "votes": vote_details,
+                "result": voted_out,
+                "is_tie": len(most_voted) > 1
+            })
+            
+            # 处理出局
             self.kill_player(voted_out, "公投出局")
 
     def kill_player(self, player_id: str, reason: str) -> None:
