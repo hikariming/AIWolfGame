@@ -1,0 +1,52 @@
+{
+  "game_settings": {
+    "total_players": 6,
+    "day_time_limit": 300,
+    "night_time_limit": 120
+  },
+  "roles": {
+    "werewolf": {
+      "wolf1": {
+        "ai_type": "gpt-4",
+        "name": "灰太狼",
+        "personality": "狡猾谨慎"
+      },
+      "wolf2": {
+        "ai_type": "claude-2",
+        "name": "红太狼",
+        "personality": "激进主动"
+      }
+    },
+    "villager": {
+      "villager1": {
+        "ai_type": "local-llama",
+        "name": "张大胆",
+        "personality": "质朴老实"
+      },
+      "villager2": {
+        "ai_type": "gpt-4",
+        "name": "李明白",
+        "personality": "聪明理性"
+      },
+      "villager3": {
+        "ai_type": "claude-2",
+        "name": "王机灵",
+        "personality": "爱说爱笑"
+      }
+    },
+    "seer": {
+      "seer1": {
+        "ai_type": "gpt-4",
+        "name": "预言家",
+        "personality": "沉稳冷静"
+      }
+    },
+    "witch": {
+      "witch1": {
+        "ai_type": "claude-2",
+        "name": "女巫",
+        "personality": "神秘智慧"
+      }
+    }
+  }
+} 

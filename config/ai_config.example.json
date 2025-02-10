@@ -1,0 +1,30 @@
+{
+  "ai_players": {
+    "gpt-4": {
+      "baseurl": "https://api.openai.com/v1",
+      "api_key": "sk-your-key-here",
+      "model": "gpt-4",
+      "temperature": 0.7,
+      "max_tokens": 1000,
+      "retry_attempts": 3,
+      "timeout": 30
+    },
+    "claude-2": {
+      "baseurl": "https://api.anthropic.com/v1",
+      "api_key": "sk-your-key-here",
+      "model": "claude-2",
+      "temperature": 0.7,
+      "max_tokens": 1000,
+      "retry_attempts": 3,
+      "timeout": 30
+    },
+    "local-llama": {
+      "baseurl": "http://localhost:8000",
+      "model": "llama-2-13b",
+      "temperature": 0.7,
+      "max_tokens": 1000,
+      "retry_attempts": 3,
+      "timeout": 30
+    }
+  }
+} 
