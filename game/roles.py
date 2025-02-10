@@ -1,37 +1,35 @@
 """
-游戏角色定义和能力实现
+游戏角色定义
 
 主要职责：
-1. 角色基类
-   - 定义通用角色属性
-   - 实现基础行为（发言、投票等）
+1. 定义角色类型枚举
+2. 定义基础角色类
+3. 实现具体角色类（狼人、村民）
+"""
 
-2. 具体角色实现
-   - 狼人：夜晚杀人能力
-   - 预言家：查验身份能力
-   - 女巫：使用药水能力
-   - 村民：基本行为
+from enum import Enum
+from typing import Optional, List
+import logging
 
-3. 与其他模块的交互：
-   - 被 game_controller.py 调用使用角色能力
-   - 与 ai_players.py 配合进行决策
-   - 使用 config/role_config.json 的配置
+class RoleType(Enum):
+    WEREWOLF = "werewolf"
+    VILLAGER = "villager"
 
-类设计：
 class BaseRole:
-    def __init__()
-    def speak()
-    def vote()
+    def __init__(self, player_id: str, name: str, role_type: RoleType):
+        self.player_id = player_id
+        self.name = name
+        self.role_type = role_type
+        self.is_alive = True
+
+    def is_wolf(self) -> bool:
+        """判断是否是狼人"""
+        return self.role_type == RoleType.WEREWOLF
 
 class Werewolf(BaseRole):
-    def kill()
-
-class Seer(BaseRole):
-    def check_identity()
-
-class Witch(BaseRole):
-    def use_potion()
+    def __init__(self, player_id: str, name: str):
+        super().__init__(player_id, name, RoleType.WEREWOLF)
 
 class Villager(BaseRole):
-    # 基本村民实现
-""" 
+    def __init__(self, player_id: str, name: str):
+        super().__init__(player_id, name, RoleType.VILLAGER)
