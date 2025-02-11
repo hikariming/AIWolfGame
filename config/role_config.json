@@ -1,6 +1,6 @@
 {
   "game_settings": {
-    "total_players": 6,
+    "total_players": 5,
     "day_time_limit": 180,
     "night_time_limit": 60
   },
@@ -10,11 +10,6 @@
         "ai_type": "gpt-4",
         "name": "灰太狼",
         "personality": "狡猾"
-      },
-      "wolf2": {
-        "ai_type": "claude35",
-        "name": "红太狼",
-        "personality": "激进"
       }
     },
     "villager": {

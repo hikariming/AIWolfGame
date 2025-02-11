@@ -13,21 +13,66 @@ from openai import OpenAI
 import logging
 import re
 from .roles import BaseRole, RoleType
+import random
 
 class Memory:
     def __init__(self):
         self.conversations: List[Dict] = []  # 所有对话记录
         self.game_results: List[Dict] = []   # 每轮游戏结果
+        self.current_round_discussions: List[Dict] = []  # 当前回合的讨论记录
 
     def add_conversation(self, conversation: Dict):
+        """添加对话记录
+        
+        Args:
+            conversation: 包含回合、阶段、说话者和内容的字典
+        """
         self.conversations.append(conversation)
+        if conversation.get("phase") == "discussion":
+            self.current_round_discussions.append(conversation)
 
     def add_game_result(self, result: Dict):
         self.game_results.append(result)
 
+    def get_current_round_discussions(self) -> List[Dict]:
+        """获取当前回合的所有讨论"""
+        return self.current_round_discussions
+
+    def clear_current_round(self):
+        """清空当前回合的讨论记录"""
+        self.current_round_discussions = []
+
     def get_recent_conversations(self, count: int = 5) -> List[Dict]:
-        """获取最近的几条对话记录"""
-        return self.conversations[-count:] if self.conversations else []
+        """获取最近的几条对话记录，并格式化为易读的形式"""
+        recent = self.conversations[-count:] if self.conversations else []
+        formatted = []
+        for conv in recent:
+            if conv.get("phase") == "discussion":
+                formatted.append(f"{conv.get('speaker', '未知')}说：{conv.get('content', '')}")
+        return formatted
+
+    def get_all_conversations(self) -> str:
+        """获取所有对话记录的格式化字符串"""
+        if not self.conversations:
+            return "暂无历史记录"
+            
+        formatted = []
+        current_round = None
+        
+        for conv in self.conversations:
+            # 如果是新的回合，添加回合标记
+            if current_round != conv.get("round"):
+                current_round = conv.get("round")
+                formatted.append(f"\n=== 第 {current_round} 回合 ===\n")
+            
+            if conv.get("phase") == "discussion":
+                formatted.append(f"{conv.get('speaker', '未知')}说：{conv.get('content', '')}")
+            elif conv.get("phase") == "vote":
+                formatted.append(f"{conv.get('speaker', '未知')}投票给了{conv.get('target', '未知')}，理由：{conv.get('content', '')}")
+            elif conv.get("phase") == "death":
+                formatted.append(f"{conv.get('speaker', '未知')}的遗言：{conv.get('content', '')}")
+        
+        return "\n".join(formatted)
 
 class BaseAIAgent:
     def __init__(self, config: Dict[str, Any], role: BaseRole):
@@ -105,43 +150,37 @@ class BaseAIAgent:
             return None
 
     def discuss(self, game_state: Dict[str, Any]) -> Dict[str, Any]:
-        """狼人讨论"""
+        """讨论阶段"""
         prompt = self._generate_discussion_prompt(game_state)
-        response = self.ask_ai(prompt, self._get_werewolf_discussion_prompt())
+        response = self.ask_ai(prompt, self._get_discussion_prompt())
         
-        # 记录讨论
+        # 记录讨论，包含说话者信息
         self.memory.add_conversation({
             "round": game_state["current_round"],
             "phase": "discussion",
+            "speaker": self.role.name,
             "content": response
         })
         
-        # 尝试解析JSON响应
-        try:
-            if game_state["phase"] == "night":
-                # 夜间杀人讨论
-                return {
-                    "type": "kill",
-                    "content": response,
-                    "target": self._extract_target(response)
-                }
-            else:
-                # 白天正常发言
-                return {
-                    "type": "discuss",
-                    "content": response
-                }
-        except Exception as e:
-            self.logger.error(f"解析响应失败: {str(e)}")
-            return {
-                "type": "error",
-                "content": response,
-                "target": "villager1"
-            }
+        # 更新游戏状态中的讨论记录
+        if "discussions" not in game_state:
+            game_state["discussions"] = []
+        game_state["discussions"].append({
+            "speaker": self.role.name,
+            "content": response
+        })
+        
+        return {
+            "type": "discuss",
+            "content": response
+        }
 
     def vote(self, game_state: Dict[str, Any]) -> Dict[str, Any]:
         """投票决定
         
+        Args:
+            game_state: 游戏状态
+            
         Returns:
             Dict 包含:
                 - target: 投票目标ID
@@ -152,11 +191,18 @@ class BaseAIAgent:
         
         # 从响应中提取目标ID和理由
         target = self._extract_target(response)
-        reason = response  # 完整的响应作为理由
+        
+        # 添加防止自投的逻辑
+        if target == self.role.name:
+            self.logger.warning(f"{self.role.name} 试图投票给自己，重新选择一个随机目标")
+            alive_players = [pid for pid, info in game_state['players'].items() 
+                            if info['is_alive'] and pid != self.role.name]
+            if alive_players:
+                target = random.choice(alive_players)
         
         return {
             "target": target,
-            "reason": reason
+            "reason": response
         }
 
     def _generate_action_prompt(self) -> str:
@@ -170,95 +216,19 @@ class BaseAIAgent:
         5. 表现出说话时的情绪变化
         """
 
-    def _generate_discussion_prompt(self, game_state: Dict[str, Any]) -> str:
-        """根据角色类型生成不同的讨论提示词"""
-        base_prompt = f"""
-        {self._generate_action_prompt()}
+    def _format_discussions(self, discussions: List[Dict]) -> str:
+        """格式化讨论记录"""
+        if not discussions:
+            return "暂无讨论记录"
         
-        当前游戏状态:
-        - 回合: {game_state['current_round']}
-        - 存活玩家: {[f"{info['name']}({pid})" for pid, info in game_state['players'].items() if info['is_alive']]}
-        - 你的身份: {self.role.role_type.value} {self.role.name}
-        - 历史记录: {self.memory.get_recent_conversations()}
-        """
-        
-        if self.role.is_wolf():
-            # 狼人的提示词
-            if game_state["phase"] == "night":
-                return base_prompt + """
-                作为狼人，请讨论今晚要杀死谁：
-                1. 分析每个玩家的威胁程度
-                2. 考虑对方可能的角色
-                3. 给出详细的理由
-                4. 发言必须超过20个字
-                5. 最后用"选择[玩家ID]"格式说明你的决定
-                """
-            else:
-                return base_prompt + """
-                请以好人的身份发表你的看法：
-                1. 分析每个玩家的行为和发言
-                2. 表达你对局势的判断
-                3. 适当表达怀疑，但不要暴露自己
-                4. 发言必须超过20个字
-                5. 尝试引导方向，保护队友
-                """
-        else:
-            # 村民的提示词
-            return base_prompt + """
-            请发表你的看法：
-            1. 分析每个玩家的行为和发言
-            2. 表达你对局势的判断
-            3. 指出可疑的玩家
-            4. 发言必须超过20个字
-            5. 为你的观点提供合理的依据
-            """
+        formatted = []
+        for disc in discussions:
+            formatted.append(f"{disc['speaker']} 说：{disc['content']}")
+        return "\n".join(formatted)
 
-    def _generate_vote_prompt(self, game_state: Dict[str, Any]) -> str:
-        return f"""
-        当前游戏状态:
-        - 回合: {game_state['current_round']}
-        - 存活玩家: {[f"{info['name']}({pid})" for pid, info in game_state['players'].items() if info['is_alive']]}
-        - 你的身份: {self.role.role_type.value}
-        - 历史记录: {self.memory.get_recent_conversations()}
-        
-        请详细说明你要投票给谁，以及投票的理由。
-        
-        要求：
-        1. 分析局势，给出合理的投票理由
-        2. 考虑其他玩家的发言和行为
-        3. 必须以"选择[玩家ID]"的格式（例如："选择[wolf1]"或"选择[villager1]"）来明确指出你的投票目标
-        4. 玩家ID必须是完整的格式，如wolf1、villager1等
-        """
-
-    def _get_werewolf_system_prompt(self) -> str:
-        return """你是一个狼人玩家，正在和队友商量今晚要杀死谁。
-        要考虑：
-        1. 优先杀死对狼人威胁大的玩家
-        2. 避免暴露自己和队友的身份
-        3. 分析其他玩家的行为模式
-        4. 与队友的意见保持协调
-        请给出分析和最终决定。
-        """
-
-    def _get_werewolf_day_system_prompt(self) -> str:
-        return """你是一个狼人玩家，正在白天伪装成好人发言。
-        要考虑：
-        1. 表现得像一个认真找狼人的好人
-        2. 适当怀疑和引导方向，但不要太明显
-        3. 在关键时刻保护自己和队友
-        4. 注意前后发言的一致性
-        请给出合理的分析和投票决定。
-        """
-
-    def _get_werewolf_discussion_prompt(self) -> str:
-        return """你是一个狼人玩家，正在白天伪装成好人发言。
-        要考虑：
-        1. 表现得像一个认真找狼人的好人
-        2. 适当怀疑和引导方向，但不要太明显
-        3. 在关键时刻保护自己和队友
-        4. 注意前后发言的一致性
-        请给出合理的分析和投票决定。
-        """
+    def _get_discussion_prompt(self) -> str:
+        """获取讨论的系统提示词"""
+        return """你正在参与一场游戏讨论。请根据当前的游戏状态和讨论记录，给出合理的分析和判断。"""
 
     def _get_werewolf_vote_prompt(self) -> str:
         return """你是一个狼人玩家，正在根据讨论情况投票。
@@ -296,6 +266,45 @@ class BaseAIAgent:
         2. 表达真挚的情感
         3. 可以给出重要的信息
         4. 为存活的玩家指明方向
+        """
+
+    def _generate_discussion_prompt(self, game_state: Dict[str, Any]) -> str:
+        """生成讨论提示词，包含所有历史发言"""
+        base_prompt = f"""
+        {self._generate_action_prompt()}
+        
+        当前游戏状态:
+        - 回合: {game_state['current_round']}
+        - 存活玩家: {[f"{info['name']}({pid})" for pid, info in game_state['players'].items() if info['is_alive']]}
+        - 你的身份: {self.role.role_type.value} {self.role.name}
+        
+        当前回合的讨论记录：
+        {self._format_discussions(game_state.get('discussions', []))}
+        
+        历史记录：
+        {self.memory.get_all_conversations()}
+        """
+        return base_prompt
+
+    def _generate_vote_prompt(self, game_state: Dict[str, Any]) -> str:
+        return f"""
+        当前游戏状态:
+        - 回合: {game_state['current_round']}
+        - 存活玩家: {[f"{info['name']}({pid})" for pid, info in game_state['players'].items() 
+                    if info['is_alive'] and pid != self.role.name]}
+        - 你的身份: {self.role.role_type.value}
+        
+        完整对话记录：
+        {self.memory.get_all_conversations()}
+        
+        请详细说明你要投票给谁，以及投票的理由。注意：不能投票给自己！
+        
+        要求：
+        1. 分析局势，给出合理的投票理由
+        2. 考虑其他玩家的发言和行为
+        3. 必须以"选择[玩家ID]"的格式来明确指出你的投票目标
+        4. 玩家ID必须是完整的格式，如wolf1、villager1等
+        5. 不能选择自己作为投票目标
         """
 
 class WerewolfAgent(BaseAIAgent):
