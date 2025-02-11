@@ -88,7 +88,7 @@ class GameController:
                  if role.is_wolf() and role.is_alive]
         
         if wolves:
-            print("\n狼人们正在商讨目标...")
+            print("\n狼人们正在商讨...")
             time.sleep(self.delay)
             
             # 狼人讨论
@@ -105,17 +105,29 @@ class GameController:
                     wolf_opinions.append({
                         "wolf": self.players[wolf_id].name,
                         "opinion": result["content"],
-                        "target": result["target"]
+                        "target": result.get("target")
                     })
-                    if final_target is None:
+                    if final_target is None and result.get("target"):
                         final_target = result["target"]
                 
                 time.sleep(self.delay)
             
+            # 第一回合只确认身份，不杀人
+            if self.current_round == 1:
+                print("\n第一个夜晚，狼人互相确认身份")
+                # 记录到游戏历史
+                self.game_state["history"].append({
+                    "round": self.current_round,
+                    "phase": "night",
+                    "event": "wolf_identify",
+                    "opinions": wolf_opinions
+                })
+                return
+            
             # 显示最终决定
             if final_target and final_target in self.players:
                 print(f"\n狼人们最终决定击杀 {self.players[final_target].name}")
-                self.kill_player(final_target, "狼人袭击")
+                self.kill_player(final_target, "狼人袭击", allow_last_words=False)
                 
                 # 记录这次击杀到游戏历史
                 self.game_state["history"].append({
@@ -159,6 +171,10 @@ class GameController:
             role = self.players[player_id]
             agent = self.ai_agents[player_id]
             
+            # 检查玩家是否有发言权
+            if not role.is_alive:
+                continue
+            
             print(f"\n{role.name} 的发言：")
             result = agent.discuss(self.game_state)
             
@@ -201,6 +217,10 @@ class GameController:
             role = self.players[player_id]
             agent = self.ai_agents[player_id]
             
+            # 检查玩家是否有发言权
+            if not role.is_alive:
+                continue
+            
             print(f"\n{role.name} 要补充发言吗？")
             result = agent.discuss(self.game_state)
             
@@ -238,25 +258,40 @@ class GameController:
         votes = {}
         vote_details = []
         
-        # 收集所有存活玩家的投票
+        # 只有存活玩家才能投票
         alive_players = [pid for pid, role in self.players.items() if role.is_alive]
         for player_id in alive_players:
             role = self.players[player_id]
             agent = self.ai_agents[player_id]
             
-            # 获取投票目标
-            target_id = agent.vote(self.game_state)
-            if target_id in self.players:  # 确保投票目标有效
+            # 再次检查玩家是否存活
+            if not role.is_alive:
+                continue
+            
+            # 获取投票目标和投票理由
+            vote_result = agent.vote(self.game_state)
+            target_id = vote_result.get("target")
+            reason = vote_result.get("reason", "没有给出具体理由")
+            
+            if target_id and target_id in self.players:  # 确保投票目标有效
                 votes[target_id] = votes.get(target_id, 0) + 1
-                vote_detail = f"{role.name} 投票给了 {self.players[target_id].name}"
-                print(vote_detail)
-                vote_details.append({
-                    "voter": role.name,
+                vote_detail = {
+                    "voter": player_id,
+                    "voter_name": role.name,
                     "voter_role": role.role_type.value,
-                    "target": self.players[target_id].name,
-                    "target_id": target_id
-                })
+                    "target": target_id,
+                    "target_name": self.players[target_id].name,
+                    "reason": reason
+                }
+                print(f"{role.name} 投票给了 {self.players[target_id].name}，理由：{reason}")
+                vote_details.append(vote_detail)
             else:
+                # 如果没有有效的投票目标，随机选择一个存活玩家（除了自己）
+                possible_targets = [pid for pid in alive_players if pid != player_id]
+                if possible_targets:
+                    target_id = random.choice(possible_targets)
+                    votes[target_id] = votes.get(target_id, 0) + 1
+                    print(f"{role.name} 的投票无效，随机投给了 {self.players[target_id].name}")
                 self.logger.warning(f"无效的投票目标: {target_id}")
             
             time.sleep(self.delay)
@@ -267,9 +302,9 @@ class GameController:
             max_votes = max(votes.values())
             most_voted = [pid for pid, count in votes.items() if count == max_votes]
             
-            print("\n投票结果：")
-            for detail in vote_details:
-                print(f"{detail['voter']} 投票给了 {detail['target']}")
+            print("\n投票结果统计：")
+            for pid, count in votes.items():
+                print(f"{self.players[pid].name}: {count}票")
             
             if len(most_voted) > 1:
                 print("\n出现平票！")
@@ -290,11 +325,17 @@ class GameController:
                 "is_tie": len(most_voted) > 1
             })
             
-            # 处理出局
-            self.kill_player(voted_out, "公投出局")
+            # 处理出局，允许发表遗言
+            self.kill_player(voted_out, "公投出局", allow_last_words=True)
 
-    def kill_player(self, player_id: str, reason: str) -> None:
-        """处理玩家死亡"""
+    def kill_player(self, player_id: str, reason: str, allow_last_words: bool = True) -> None:
+        """处理玩家死亡
+        
+        Args:
+            player_id: 死亡玩家ID
+            reason: 死亡原因
+            allow_last_words: 是否允许发表遗言
+        """
         if player_id in self.players:
             player = self.players[player_id]
             player.is_alive = False
@@ -305,6 +346,26 @@ class GameController:
             else:
                 self.game_state["alive_count"]["villager"] -= 1
             
+            print(f"\n{player.name} 被{reason}")
+            
+            # 处理遗言
+            if allow_last_words:
+                # 第一天晚上死亡或白天死亡的玩家可以发表遗言
+                if self.current_round == 1 or reason == "公投出局":
+                    print(f"\n{player.name} 的遗言：")
+                    agent = self.ai_agents[player_id]
+                    last_words = agent.last_words(self.game_state)
+                    print(last_words)
+                    
+                    # 记录遗言
+                    self.game_state["history"].append({
+                        "round": self.current_round,
+                        "phase": self.game_state["phase"],
+                        "event": "last_words",
+                        "player": player_id,
+                        "content": last_words
+                    })
+            
             # 记录死亡信息
             self.game_state["history"].append({
                 "round": self.current_round,
@@ -314,7 +375,6 @@ class GameController:
                 "reason": reason
             })
             
-            print(f"\n{player.name} 被{reason}")
             time.sleep(self.delay)
 
     def check_game_over(self) -> bool:

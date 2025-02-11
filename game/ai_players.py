@@ -59,18 +59,50 @@ class BaseAIAgent:
             self.logger.error(f"AI 调用失败: {str(e)}")
             return "【皱眉思考】经过深思熟虑，我认为villager1比较可疑。选择villager1"
 
-    def _extract_target(self, response: str) -> str:
-        """从 AI 响应中提取目标玩家 ID"""
+    def _extract_target(self, response: str) -> Optional[str]:
+        """从 AI 响应中提取目标玩家 ID
+        
+        Args:
+            response: AI的完整响应文本
+        
+        Returns:
+            str: 目标玩家ID，如果没有找到则返回None
+        """
         try:
-            # 使用正则表达式匹配玩家 ID
-            match = re.search(r'选择(\w+)', response)
-            if match:
-                return match.group(1)
-            self.logger.warning(f"无法从响应中提取目标ID: {response}")
-            return "villager1"  # 默认选择
+            # 使用正则表达式匹配以下格式：
+            # 1. 选择[玩家ID]
+            # 2. 选择玩家ID
+            # 3. 选择 玩家ID
+            # 4. 选择：玩家ID
+            patterns = [
+                r'选择\[([^\]]+)\]',  # 匹配 选择[wolf1] 或 选择[villager1]
+                r'选择\s*(\w+\d*)',   # 匹配 选择wolf1 或 选择 villager1
+                r'选择[：:]\s*(\w+\d*)'  # 匹配 选择：wolf1 或 选择:villager1
+            ]
+            
+            for pattern in patterns:
+                matches = re.findall(pattern, response)
+                if matches:
+                    # 提取玩家ID，去除可能的额外空格和括号
+                    target = matches[-1].strip('()[]').strip()
+                    # 验证是否是有效的玩家ID格式
+                    if re.match(r'^(wolf|villager)\d+$', target):
+                        return target
+            
+            # 如果上面的模式都没匹配到，尝试查找带括号的玩家ID
+            id_pattern = r'\((\w+\d+)\)'
+            matches = re.findall(id_pattern, response)
+            if matches:
+                target = matches[-1]
+                if re.match(r'^(wolf|villager)\d+$', target):
+                    return target
+                
+            self.logger.warning(f"无法从响应中提取有效的目标ID: {response}")
+            return None
+        
         except Exception as e:
             self.logger.error(f"提取目标ID时出错: {str(e)}")
-            return "villager1"  # 默认选择
+            return None
 
     def discuss(self, game_state: Dict[str, Any]) -> Dict[str, Any]:
         """狼人讨论"""
@@ -107,11 +139,25 @@ class BaseAIAgent:
                 "target": "villager1"
             }
 
-    def vote(self, game_state: Dict[str, Any]) -> str:
-        """根据讨论做出投票决定"""
+    def vote(self, game_state: Dict[str, Any]) -> Dict[str, Any]:
+        """投票决定
+        
+        Returns:
+            Dict 包含:
+                - target: 投票目标ID
+                - reason: 投票理由
+        """
         prompt = self._generate_vote_prompt(game_state)
         response = self.ask_ai(prompt, self._get_werewolf_vote_prompt())
-        return self._extract_target(response)
+        
+        # 从响应中提取目标ID和理由
+        target = self._extract_target(response)
+        reason = response  # 完整的响应作为理由
+        
+        return {
+            "target": target,
+            "reason": reason
+        }
 
     def _generate_action_prompt(self) -> str:
         """生成动作和神色的提示词"""
@@ -125,62 +171,63 @@ class BaseAIAgent:
         """
 
     def _generate_discussion_prompt(self, game_state: Dict[str, Any]) -> str:
-        if game_state["phase"] == "night":
-            return f"""
-            {self._generate_action_prompt()}
-            
-            当前游戏状态:
-            - 回合: {game_state['current_round']}
-            - 存活玩家: {[f"{info['name']}({pid})" for pid, info in game_state['players'].items() if info['is_alive']]}
-            - 你的身份: 狼人 {self.role.name}
-            - 你的队友: {[game_state['players'][pid]['name'] for pid in self.team_members]}
-            - 历史记录: {self.memory.get_recent_conversations()}
-
-            作为狼人，请讨论今晚要杀死谁：
-            1. 分析每个玩家的威胁程度
-            2. 考虑对方可能的角色
-            3. 给出详细的理由
-            4. 发言必须超过20个字
-            5. 最后用"选择[玩家ID]"格式说明你的决定
-            """
+        """根据角色类型生成不同的讨论提示词"""
+        base_prompt = f"""
+        {self._generate_action_prompt()}
+        
+        当前游戏状态:
+        - 回合: {game_state['current_round']}
+        - 存活玩家: {[f"{info['name']}({pid})" for pid, info in game_state['players'].items() if info['is_alive']]}
+        - 你的身份: {self.role.role_type.value} {self.role.name}
+        - 历史记录: {self.memory.get_recent_conversations()}
+        """
+        
+        if self.role.is_wolf():
+            # 狼人的提示词
+            if game_state["phase"] == "night":
+                return base_prompt + """
+                作为狼人，请讨论今晚要杀死谁：
+                1. 分析每个玩家的威胁程度
+                2. 考虑对方可能的角色
+                3. 给出详细的理由
+                4. 发言必须超过20个字
+                5. 最后用"选择[玩家ID]"格式说明你的决定
+                """
+            else:
+                return base_prompt + """
+                请以好人的身份发表你的看法：
+                1. 分析每个玩家的行为和发言
+                2. 表达你对局势的判断
+                3. 适当表达怀疑，但不要暴露自己
+                4. 发言必须超过20个字
+                5. 尝试引导方向，保护队友
+                """
         else:
-            return f"""
-            {self._generate_action_prompt()}
-            
-            当前游戏状态:
-            - 回合: {game_state['current_round']}
-            - 存活玩家: {[f"{info['name']}({pid})" for pid, info in game_state['players'].items() if info['is_alive']]}
-            - 你的身份: 狼人 {self.role.name}
-            - 你的队友: {[game_state['players'][pid]['name'] for pid in self.team_members]}
-            - 历史记录: {self.memory.get_recent_conversations()}
-
-            请以好人的身份发表你的看法：
+            # 村民的提示词
+            return base_prompt + """
+            请发表你的看法：
             1. 分析每个玩家的行为和发言
             2. 表达你对局势的判断
-            3. 适当表达怀疑，但不要暴露自己
+            3. 指出可疑的玩家
             4. 发言必须超过20个字
-            5. 尝试引导方向，保护队友
+            5. 为你的观点提供合理的依据
             """
 
     def _generate_vote_prompt(self, game_state: Dict[str, Any]) -> str:
-        alive_players = [p for p, s in game_state["players"].items() 
-                        if s["is_alive"] and p != self.role.player_id]
-        recent_history = self.memory.get_recent_conversations()
-        
         return f"""
         当前游戏状态:
         - 回合: {game_state['current_round']}
-        - 存活玩家: {alive_players}
-        - 你的身份: 狼人
-        - 你的队友: {self.team_members}
-        - 最近的发言和事件: {recent_history}
+        - 存活玩家: {[f"{info['name']}({pid})" for pid, info in game_state['players'].items() if info['is_alive']]}
+        - 你的身份: {self.role.role_type.value}
+        - 历史记录: {self.memory.get_recent_conversations()}
         
-        作为狼人，你需要在白天伪装成好人发言。
+        请详细说明你要投票给谁，以及投票的理由。
+        
         要求：
-        1. 分析局势，但要站在好人的角度思考
-        2. 适当怀疑某些玩家，但不要过分指向好人
-        3. 注意不要暴露自己和队友的身份
-        4. 用"选择[玩家ID]"格式说明投票决定
+        1. 分析局势，给出合理的投票理由
+        2. 考虑其他玩家的发言和行为
+        3. 必须以"选择[玩家ID]"的格式（例如："选择[wolf1]"或"选择[villager1]"）来明确指出你的投票目标
+        4. 玩家ID必须是完整的格式，如wolf1、villager1等
         """
 
     def _get_werewolf_system_prompt(self) -> str:
@@ -220,6 +267,35 @@ class BaseAIAgent:
         2. 适当怀疑某些玩家，但不要过分指向好人
         3. 注意不要暴露自己和队友的身份
         4. 用"选择[玩家ID]"格式说明投票决定
+        """
+
+    def last_words(self, game_state: Dict[str, Any]) -> str:
+        """处理玩家的遗言"""
+        prompt = f"""
+        当前游戏状态:
+        - 回合: {game_state['current_round']}
+        - 你的身份: {self.role.role_type.value} {self.role.name}
+        - 你即将死亡，这是你最后的遗言。
+        
+        请说出你的遗言：
+        1. 可以揭示自己的真实身份
+        2. 可以给出对局势的分析
+        3. 可以给存活的玩家一些建议
+        4. 发言要符合角色身份
+        5. 加入适当的动作描写
+        """
+        
+        response = self.ask_ai(prompt, self._get_last_words_prompt())
+        return response
+
+    def _get_last_words_prompt(self) -> str:
+        """获取遗言的系统提示词"""
+        return """你正在发表临终遗言。
+        要求：
+        1. 符合角色身份特征
+        2. 表达真挚的情感
+        3. 可以给出重要的信息
+        4. 为存活的玩家指明方向
         """
 
 class WerewolfAgent(BaseAIAgent):
@@ -262,11 +338,50 @@ class WerewolfAgent(BaseAIAgent):
                 "target": "villager1"
             }
 
-    def vote(self, game_state: Dict[str, Any]) -> str:
+    def vote(self, game_state: Dict[str, Any]) -> Dict[str, Any]:
         """根据讨论做出投票决定"""
         prompt = self._generate_vote_prompt(game_state)
         response = self.ask_ai(prompt, self._get_werewolf_vote_prompt())
-        return self._extract_target(response)
+        
+        # 从响应中提取目标ID和理由
+        target = self._extract_target(response)
+        
+        return {
+            "target": target,
+            "reason": response
+        }
+
+    def _generate_discussion_prompt(self, game_state: Dict[str, Any]) -> str:
+        """重写狼人的讨论提示词，加入队友信息"""
+        base_prompt = f"""
+        {self._generate_action_prompt()}
+        
+        当前游戏状态:
+        - 回合: {game_state['current_round']}
+        - 存活玩家: {[f"{info['name']}({pid})" for pid, info in game_state['players'].items() if info['is_alive']]}
+        - 你的身份: 狼人 {self.role.name}
+        - 你的队友: {[game_state['players'][pid]['name'] for pid in self.team_members]}
+        - 历史记录: {self.memory.get_recent_conversations()}
+        """
+        
+        if game_state["phase"] == "night":
+            return base_prompt + """
+            作为狼人，请讨论今晚要杀死谁：
+            1. 分析每个玩家的威胁程度
+            2. 考虑对方可能的角色
+            3. 给出详细的理由
+            4. 发言必须超过20个字
+            5. 最后用"选择[玩家ID]"格式说明你的决定
+            """
+        else:
+            return base_prompt + """
+            请以好人的身份发表你的看法：
+            1. 分析每个玩家的行为和发言
+            2. 表达你对局势的判断
+            3. 适当表达怀疑，但不要暴露自己
+            4. 发言必须超过20个字
+            5. 尝试引导方向，保护队友
+            """
 
     def _get_werewolf_discussion_prompt(self) -> str:
         return """你是一个狼人玩家，需要决定今晚要杀死谁。
@@ -300,47 +415,40 @@ class VillagerAgent(BaseAIAgent):
             "content": response
         })
         
-        return response  # 返回完整的讨论内容
+        return {
+            "type": "discuss",
+            "content": response
+        }
 
-    def vote(self, game_state: Dict[str, Any]) -> str:
+    def vote(self, game_state: Dict[str, Any]) -> Dict[str, Any]:
         """村民根据讨论做出投票决定"""
         prompt = self._generate_vote_prompt(game_state)
         response = self.ask_ai(prompt, self._get_villager_vote_prompt())
-        return self._extract_target(response)
-
-    def _get_villager_system_prompt(self) -> str:
-        return """你是一个村民阵营的玩家，需要找出狼人。
-        要考虑：
-        1. 分析其他玩家的发言
-        2. 注意前后矛盾的地方
-        3. 找出可疑的行为模式
-        请给出分析和投票决定。
-        """
+        target = self._extract_target(response)
+        return {
+            "target": target,
+            "reason": response
+        }
 
     def _get_villager_discussion_prompt(self) -> str:
-        return f"""
-        {self._generate_action_prompt()}
-        
-        当前游戏状态:
-        - 回合: {game_state['current_round']}
-        - 存活玩家: {[f"{info['name']}({pid})" for pid, info in game_state['players'].items() if info['is_alive']]}
-        - 你的身份: 村民 {self.role.name}
-        - 历史记录: {self.memory.get_recent_conversations()}
-
-        请以村民的身份发表你的看法：
-        1. 分析每个玩家的行为和发言
-        2. 表达你对局势的判断
-        3. 给出详细的理由
-        4. 发言必须超过20个字
-        5. 尝试找出狼人
+        """获取村民的系统提示词"""
+        return """你是一个村民玩家，需要找出狼人。
+        要考虑：
+        1. 仔细分析每个玩家的发言和行为
+        2. 寻找可疑的矛盾点
+        3. 与其他村民合作找出狼人
+        4. 保持理性和逻辑性
+        请给出你的分析和判断。
         """
 
     def _get_villager_vote_prompt(self) -> str:
-        return """你是一个村民阵营的玩家，正在根据讨论情况投票。
+        """获取村民投票的系统提示词"""
+        return """你是一个村民玩家，需要投票选出最可疑的狼人。
         要考虑：
-        1. 分析局势，但要站在村民的角度思考
-        2. 适当表达怀疑，但不要暴露自己
-        3. 尝试引导方向，保护村民
+        1. 根据之前的讨论做出判断
+        2. 给出合理的投票理由
+        3. 避免被狼人误导
+        4. 用"选择[玩家ID]"格式说明投票决定
         """
 
 def create_ai_agent(config: Dict[str, Any], role: BaseRole) -> BaseAIAgent:
