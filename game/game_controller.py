@@ -78,7 +78,7 @@ class GameController:
         self.announce_winner()
 
     def night_phase(self) -> None:
-        """夜晚阶段：狼人讨论并杀人"""
+        """夜晚阶段：狼人杀人，神职技能"""
         print("\n=== 夜晚降临 ===")
         self.game_state["phase"] = "night"
         time.sleep(self.delay)
@@ -87,13 +87,22 @@ class GameController:
         wolves = [pid for pid, role in self.players.items() 
                  if role.is_wolf() and role.is_alive]
         
+        # 获取存活的神职玩家
+        seers = [pid for pid, role in self.players.items() 
+                if role.role_type == RoleType.SEER and role.is_alive]
+        witches = [pid for pid, role in self.players.items() 
+                  if role.role_type == RoleType.WITCH and role.is_alive]
+        
+        victim_id = None  # 狼人的目标
+        saved_by_witch = False  # 是否被女巫救活
+        poisoned_by_witch = None  # 被女巫毒死的玩家
+
         if wolves:
             print("\n狼人们正在商讨...")
             time.sleep(self.delay)
             
             # 狼人讨论
             wolf_opinions = []
-            final_target = None
             
             for wolf_id in wolves:
                 agent = self.ai_agents[wolf_id]
@@ -107,36 +116,124 @@ class GameController:
                         "opinion": result["content"],
                         "target": result.get("target")
                     })
-                    if final_target is None and result.get("target"):
-                        final_target = result["target"]
+                    if victim_id is None and result.get("target"):
+                        victim_id = result["target"]
                 
                 time.sleep(self.delay)
             
             # 第一回合只确认身份，不杀人
             if self.current_round == 1:
                 print("\n第一个夜晚，狼人互相确认身份")
-                # 记录到游戏历史
                 self.game_state["history"].append({
                     "round": self.current_round,
                     "phase": "night",
                     "event": "wolf_identify",
                     "opinions": wolf_opinions
                 })
-                return
-            
-            # 显示最终决定
-            if final_target and final_target in self.players:
-                print(f"\n狼人们最终决定击杀 {self.players[final_target].name}")
-                self.kill_player(final_target, "狼人袭击", allow_last_words=False)
+                victim_id = None
+        
+        # 预言家行动
+        if seers:
+            print("\n预言家正在行动...")
+            for seer_id in seers:
+                agent = self.ai_agents[seer_id]
+                result = agent.check_player(self.game_state)
                 
-                # 记录这次击杀到游戏历史
-                self.game_state["history"].append({
-                    "round": self.current_round,
-                    "phase": "night",
-                    "event": "wolf_kill",
-                    "opinions": wolf_opinions,
-                    "target": final_target
-                })
+                if result["type"] == "check" and result["target"]:
+                    target_id = result["target"]
+                    target_role = self.players[target_id]
+                    is_wolf = target_role.is_wolf()
+                    # 不要在日志中暴露预言家身份
+                    print(f"\n{self.players[seer_id].name} 完成了行动")
+                    
+                    # 记录查验结果（只记录在游戏状态中，不输出）
+                    self.game_state["history"].append({
+                        "round": self.current_round,
+                        "phase": "night",
+                        "event": "seer_check",
+                        "seer": seer_id,
+                        "target": target_id,
+                        "is_wolf": is_wolf
+                    })
+                
+                time.sleep(self.delay)
+        
+        # 如果有人被狼人杀死
+        if victim_id:
+            # 女巫行动
+            if witches:
+                print("\n女巫正在行动...")
+                for witch_id in witches:
+                    agent = self.ai_agents[witch_id]
+                    result = agent.use_potion(self.game_state, victim_id)
+                    
+                    if result["type"] == "save":
+                        saved_by_witch = True
+                        self.players[witch_id].use_medicine()
+                        # 不要在日志中暴露女巫身份
+                        print(f"\n{self.players[witch_id].name} 使用了药水")
+                    elif result["type"] == "poison" and result["target"]:
+                        poisoned_by_witch = result["target"]
+                        self.players[witch_id].use_poison()
+                        # 不要在日志中暴露女巫身份
+                        print(f"\n{self.players[witch_id].name} 使用了药水")
+                    
+                    # 记录女巫行动
+                    self.game_state["history"].append({
+                        "round": self.current_round,
+                        "phase": "night",
+                        "event": "witch_action",
+                        "witch": witch_id,
+                        "action_type": result["type"],
+                        "target": result["target"] if "target" in result else None
+                    })
+                    
+                    time.sleep(self.delay)
+        
+        # 处理夜晚死亡
+        if victim_id and not saved_by_witch:
+            self._handle_death(victim_id, "夜晚死亡")
+        
+        if poisoned_by_witch:
+            self._handle_death(poisoned_by_witch, "夜晚死亡")
+
+    def _handle_death(self, player_id: str, reason: str) -> None:
+        """处理玩家死亡"""
+        role = self.players[player_id]
+        role.is_alive = False
+        
+        # 更新存活计数
+        if role.is_wolf():
+            self.game_state["alive_count"]["werewolf"] -= 1
+        else:
+            self.game_state["alive_count"]["villager"] -= 1
+        
+        # 更新游戏状态
+        self.game_state["players"][player_id]["is_alive"] = False
+        
+        # 记录死亡信息
+        self.game_state["history"].append({
+            "round": self.current_round,
+            "phase": "night" if self.game_state["phase"] == "night" else "day",
+            "event": "death",
+            "player": player_id,
+            "reason": reason
+        })
+        
+        print(f"\n{role.name} {reason}")
+        
+        # 如果是猎人死亡，触发开枪技能
+        if role.role_type == RoleType.HUNTER and role.can_use_gun():
+            # 不要在日志中暴露猎人身份
+            print(f"\n{role.name} 发动临终技能...")
+            agent = self.ai_agents[player_id]
+            result = agent.shoot(self.game_state)
+            
+            if result["type"] == "shoot" and result["target"]:
+                target_id = result["target"]
+                print(f"\n{role.name} 带走了 {self.players[target_id].name}")
+                role.use_gun()
+                self._handle_death(target_id, "被带走")
 
     def day_phase(self) -> None:
         """白天阶段：玩家轮流发言后进行投票"""

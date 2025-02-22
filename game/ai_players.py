@@ -3,7 +3,7 @@ AI 玩家系统
 
 主要功能：
 1. 统一的 AI 代理接口
-2. 区分狼人和人类阵营的代理
+2. 区分狼人、神职和村民阵营的代理
 3. 维护对话历史和游戏状态记忆
 4. 统一使用 OpenAI API 进行调用
 """
@@ -376,11 +376,12 @@ class WerewolfAgent(BaseAIAgent):
         if game_state["phase"] == "night":
             return base_prompt + """
             作为狼人，请讨论今晚要杀死谁：
-            1. 分析每个玩家的威胁程度
-            2. 考虑对方可能的角色
+            1. 分析每个玩家的威胁程度，但不要说出具体角色
+            2. 考虑每个人的行为特征
             3. 给出详细的理由
             4. 发言必须超过20个字
             5. 最后用"选择[玩家ID]"格式说明你的决定
+            6. 不要在发言中透露你已经知道某个玩家的具体身份
             """
         else:
             return base_prompt + """
@@ -390,15 +391,18 @@ class WerewolfAgent(BaseAIAgent):
             3. 适当表达怀疑，但不要暴露自己
             4. 发言必须超过20个字
             5. 尝试引导方向，保护队友
+            6. 不要在发言中透露你已经知道某个玩家的具体身份
             """
 
     def _get_werewolf_discussion_prompt(self) -> str:
         return """你是一个狼人玩家，需要决定今晚要杀死谁。
         要考虑：
-        1. 优先杀死对狼人威胁大的玩家
+        1. 分析每个玩家的威胁程度，但不要在发言中直接说出你认为他们是什么角色
         2. 避免暴露自己和队友的身份
         3. 分析其他玩家的行为模式
         4. 与队友的意见保持协调
+        5. 不要在发言中透露你已经知道某个玩家的具体身份
+        6. 用含蓄的方式表达你的判断，比如"这个人比较危险"而不是"他是预言家"
         请给出分析和最终决定。
         """
 
@@ -460,9 +464,158 @@ class VillagerAgent(BaseAIAgent):
         4. 用"选择[玩家ID]"格式说明投票决定
         """
 
+class SeerAgent(BaseAIAgent):
+    def __init__(self, config: Dict[str, Any], role: BaseRole):
+        super().__init__(config, role)
+        self.checked_results = {}  # 记录查验结果
+
+    def check_player(self, game_state: Dict[str, Any]) -> Dict[str, Any]:
+        """夜晚查验玩家身份"""
+        prompt = self._generate_check_prompt(game_state)
+        response = self.ask_ai(prompt, self._get_seer_check_prompt())
+        
+        target = self._extract_target(response)
+        if target:
+            self.checked_results[target] = game_state["players"][target]["role"]
+            
+        return {
+            "type": "check",
+            "target": target,
+            "reason": response
+        }
+
+    def _get_seer_check_prompt(self) -> str:
+        return """你是预言家，需要选择一个玩家查验身份。
+        要考虑：
+        1. 分析可疑玩家的行为
+        2. 避免重复查验同一个人
+        3. 优先查验最可疑的对象
+        4. 用"选择[玩家ID]"格式说明查验目标
+        """
+
+    def _generate_check_prompt(self, game_state: Dict[str, Any]) -> str:
+        return f"""
+        当前游戏状态:
+        - 回合: {game_state['current_round']}
+        - 存活玩家: {[f"{info['name']}({pid})" for pid, info in game_state['players'].items() if info['is_alive']]}
+        - 已查验玩家: {list(self.checked_results.keys())}
+        
+        请选择今晚要查验的玩家：
+        1. 分析每个玩家的行为
+        2. 考虑历史发言内容
+        3. 给出详细的理由
+        4. 用"选择[玩家ID]"格式说明查验目标
+        """
+
+class WitchAgent(BaseAIAgent):
+    def __init__(self, config: Dict[str, Any], role: BaseRole):
+        super().__init__(config, role)
+
+    def use_potion(self, game_state: Dict[str, Any], victim_id: Optional[str] = None) -> Dict[str, Any]:
+        """决定使用解药或毒药"""
+        prompt = self._generate_potion_prompt(game_state, victim_id)
+        response = self.ask_ai(prompt, self._get_witch_prompt())
+        
+        # 解析决策
+        if "使用解药" in response and victim_id:
+            return {
+                "type": "save",
+                "target": victim_id,
+                "reason": response
+            }
+        elif "使用毒药" in response:
+            target = self._extract_target(response)
+            if target:
+                return {
+                    "type": "poison",
+                    "target": target,
+                    "reason": response
+                }
+        
+        return {
+            "type": "skip",
+            "reason": response
+        }
+
+    def _get_witch_prompt(self) -> str:
+        return """你是女巫，需要决定是否使用药水。
+        要考虑：
+        1. 解药和毒药只能各使用一次
+        2. 解药要慎重使用，考虑被害者身份
+        3. 毒药要留到关键时刻
+        4. 明确说明"使用解药"或"使用毒药 选择[玩家ID]"
+        """
+
+    def _generate_potion_prompt(self, game_state: Dict[str, Any], victim_id: Optional[str] = None) -> str:
+        witch_role = self.role
+        prompt = f"""
+        当前游戏状态:
+        - 回合: {game_state['current_round']}
+        - 存活玩家: {[f"{info['name']}({pid})" for pid, info in game_state['players'].items() if info['is_alive']]}
+        - 解药状态: {'可用' if witch_role.can_save() else '已用'}
+        - 毒药状态: {'可用' if witch_role.can_poison() else '已用'}
+        """
+        
+        if victim_id and witch_role.can_save():
+            prompt += f"\n今晚的遇害者是：{game_state['players'][victim_id]['name']}({victim_id})"
+        
+        prompt += """
+        请决定：
+        1. 是否使用解药救人
+        2. 是否使用毒药杀人
+        3. 给出详细的理由
+        4. 使用"使用解药"或"使用毒药 选择[玩家ID]"格式
+        """
+        return prompt
+
+class HunterAgent(BaseAIAgent):
+    def __init__(self, config: Dict[str, Any], role: BaseRole):
+        super().__init__(config, role)
+
+    def shoot(self, game_state: Dict[str, Any]) -> Dict[str, Any]:
+        """决定开枪打死谁"""
+        prompt = self._generate_shoot_prompt(game_state)
+        response = self.ask_ai(prompt, self._get_hunter_prompt())
+        
+        target = self._extract_target(response)
+        return {
+            "type": "shoot",
+            "target": target,
+            "reason": response
+        }
+
+    def _get_hunter_prompt(self) -> str:
+        return """你是猎人，即将死亡，需要决定开枪打死谁。
+        要考虑：
+        1. 分析场上局势
+        2. 选择最可能是狼人的目标
+        3. 给出详细的理由
+        4. 用"选择[玩家ID]"格式说明射击目标
+        """
+
+    def _generate_shoot_prompt(self, game_state: Dict[str, Any]) -> str:
+        return f"""
+        当前游戏状态:
+        - 回合: {game_state['current_round']}
+        - 存活玩家: {[f"{info['name']}({pid})" for pid, info in game_state['players'].items() if info['is_alive']]}
+        - 历史记录: {self.memory.get_recent_conversations()}
+        
+        你即将死亡，请决定开枪打死谁：
+        1. 分析每个玩家的行为
+        2. 考虑历史发言内容
+        3. 给出详细的理由
+        4. 用"选择[玩家ID]"格式说明射击目标
+        """
+
 def create_ai_agent(config: Dict[str, Any], role: BaseRole) -> BaseAIAgent:
     """工厂函数：根据角色创建对应的 AI 代理"""
     if role.role_type == RoleType.WEREWOLF:
         return WerewolfAgent(config, role)
+    elif role.role_type == RoleType.SEER:
+        return SeerAgent(config, role)
+    elif role.role_type == RoleType.WITCH:
+        return WitchAgent(config, role)
+    elif role.role_type == RoleType.HUNTER:
+        return HunterAgent(config, role)
     else:
         return VillagerAgent(config, role)
