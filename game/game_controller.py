@@ -21,6 +21,39 @@ class GameController:
         }
         self.logger = logging.getLogger(__name__)
         self.delay = config.get("delay", 1.0)  # 动作延迟时间
+        
+        # 初始化评估指标记录器
+        self.metrics_logger = logging.getLogger("game_metrics")
+
+    def _log_role_recognition(self, player_id: str, target_id: str, guess_is_wolf: bool):
+        """记录角色识别准确率"""
+        actual_is_wolf = self.players[target_id].is_wolf()
+        is_correct = guess_is_wolf == actual_is_wolf
+        self.metrics_logger.log_role_recognition(player_id, is_correct)
+
+    def _log_deception_attempt(self, wolf_id: str, is_successful: bool):
+        """记录狼人欺骗成功率"""
+        self.metrics_logger.log_deception_attempt(wolf_id, is_successful)
+
+    def _log_vote(self, voter_id: str, target_id: str):
+        """记录投票准确率"""
+        voter_is_wolf = self.players[voter_id].is_wolf()
+        target_is_wolf = self.players[target_id].is_wolf()
+        # 好人投狼人或狼人投好人都算正确
+        is_correct = voter_is_wolf != target_is_wolf
+        self.metrics_logger.log_vote(voter_id, target_id, is_correct)
+
+    def _log_communication(self, player_id: str, message_id: str, influenced_others: bool):
+        """记录沟通效果"""
+        self.metrics_logger.log_communication(player_id, message_id, influenced_others)
+
+    def _log_survival(self, player_id: str):
+        """记录生存率"""
+        self.metrics_logger.log_survival(player_id, self.current_round, self.config.get("total_rounds", 100))
+
+    def _log_ability_usage(self, player_id: str, ability_type: str, is_correct: bool):
+        """记录能力使用准确率"""
+        self.metrics_logger.log_ability_usage(player_id, ability_type, is_correct)
 
     def initialize_game(self) -> None:
         """初始化游戏，创建角色和AI代理"""
@@ -118,6 +151,8 @@ class GameController:
                     })
                     if victim_id is None and result.get("target"):
                         victim_id = result["target"]
+                        # 记录狼人的欺骗尝试
+                        self._log_deception_attempt(wolf_id, True)
                 
                 time.sleep(self.delay)
             
@@ -143,6 +178,10 @@ class GameController:
                     target_id = result["target"]
                     target_role = self.players[target_id]
                     is_wolf = target_role.is_wolf()
+                    # 记录预言家的查验准确率
+                    self._log_ability_usage(seer_id, "查验", True)
+                    self._log_role_recognition(seer_id, target_id, is_wolf)
+                    
                     # 不要在日志中暴露预言家身份
                     print(f"\n{self.players[seer_id].name} 完成了行动")
                     
@@ -235,6 +274,9 @@ class GameController:
                 role.use_gun()
                 self._handle_death(target_id, "被带走")
 
+        # 记录生存率
+        self._log_survival(player_id)
+
     def day_phase(self) -> None:
         """白天阶段：玩家轮流发言后进行投票"""
         print("\n=== 天亮了 ===")
@@ -289,11 +331,17 @@ class GameController:
             print(speech)
             
             # 记录发言
+            message_id = f"{self.current_round}_{player_id}_{len(round_speeches)}"
             round_speeches.append({
                 "player": role.name,
                 "role": role.role_type.value,
-                "content": speech
+                "content": speech,
+                "message_id": message_id
             })
+            
+            # 评估发言的影响力
+            influenced_others = self._evaluate_speech_influence(speech, player_id)
+            self._log_communication(player_id, message_id, influenced_others)
             
             # 更新游戏状态
             self.game_state["history"].append({
@@ -347,6 +395,28 @@ class GameController:
             
             time.sleep(self.delay)
 
+    def _evaluate_speech_influence(self, speech: str, speaker_id: str) -> bool:
+        """评估发言的影响力
+        
+        通过分析发言内容和其他玩家的反应来判断发言是否有影响力
+        """
+        # 基本规则：
+        # 1. 发言包含具体的分析和推理
+        # 2. 提供了新的信息或视角
+        # 3. 引起了其他玩家的回应
+        has_analysis = len(re.findall(r'我认为|我觉得|我分析|根据|因为|所以', speech)) > 0
+        has_new_info = len(re.findall(r'发现|注意到|观察到|怀疑|证据', speech)) > 0
+        is_logical = len(re.findall(r'如果|那么|因此|证明|说明', speech)) > 0
+        
+        # 发言质量评分
+        score = 0
+        if has_analysis: score += 1
+        if has_new_info: score += 1
+        if is_logical: score += 1
+        if len(speech) > 100: score += 1  # 较长的发言通常包含更多信息
+        
+        return score >= 2  # 得分达到2分以上认为是有影响力的发言
+
     def voting_phase(self) -> None:
         """投票环节"""
         print("\n=== 开始投票 ===")
@@ -382,6 +452,9 @@ class GameController:
                 }
                 print(f"{role.name} 投票给了 {self.players[target_id].name}，理由：{reason}")
                 vote_details.append(vote_detail)
+                
+                # 记录投票准确率
+                self._log_vote(player_id, target_id)
             else:
                 # 如果没有有效的投票目标，随机选择一个存活玩家（除了自己）
                 possible_targets = [pid for pid in alive_players if pid != player_id]
@@ -437,6 +510,9 @@ class GameController:
             player = self.players[player_id]
             player.is_alive = False
             self.game_state["players"][player_id]["is_alive"] = False
+            
+            # 记录生存率
+            self._log_survival(player_id)
             
             if player.is_wolf():
                 self.game_state["alive_count"]["werewolf"] -= 1
