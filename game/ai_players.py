@@ -469,7 +469,9 @@ class SeerAgent(BaseAIAgent):
         
         target = self._extract_target(response)
         if target:
-            self.checked_results[target] = game_state["players"][target]["role"]
+            # 记录查验结果，但不暴露具体角色
+            is_wolf = game_state["players"][target]["role"] == "werewolf"
+            self.checked_results[target] = "werewolf" if is_wolf else "good"
             
         return {
             "type": "check",
@@ -492,6 +494,7 @@ class SeerAgent(BaseAIAgent):
         - 回合: {game_state['current_round']}
         - 存活玩家: {[f"{info['name']}({pid})" for pid, info in game_state['players'].items() if info['is_alive']]}
         - 已查验玩家: {list(self.checked_results.keys())}
+        - 查验结果: {self.checked_results}
         
         请选择今晚要查验的玩家：
         1. 分析每个玩家的行为
@@ -501,22 +504,19 @@ class SeerAgent(BaseAIAgent):
         """
 
 class WitchAgent(BaseAIAgent):
-    def __init__(self, config: Dict[str, Any], role: BaseRole):
-        super().__init__(config, role)
-
     def use_potion(self, game_state: Dict[str, Any], victim_id: Optional[str] = None) -> Dict[str, Any]:
         """决定使用解药或毒药"""
         prompt = self._generate_potion_prompt(game_state, victim_id)
         response = self.ask_ai(prompt, self._get_witch_prompt())
         
         # 解析决策
-        if "使用解药" in response and victim_id:
+        if "使用解药" in response and victim_id and self.role.can_save():
             return {
                 "type": "save",
                 "target": victim_id,
                 "reason": response
             }
-        elif "使用毒药" in response:
+        elif "使用毒药" in response and self.role.can_poison():
             target = self._extract_target(response)
             if target:
                 return {
@@ -562,9 +562,6 @@ class WitchAgent(BaseAIAgent):
         return prompt
 
 class HunterAgent(BaseAIAgent):
-    def __init__(self, config: Dict[str, Any], role: BaseRole):
-        super().__init__(config, role)
-
     def shoot(self, game_state: Dict[str, Any]) -> Dict[str, Any]:
         """决定开枪打死谁"""
         prompt = self._generate_shoot_prompt(game_state)
