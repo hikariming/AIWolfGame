@@ -457,53 +457,134 @@ class VillagerAgent(BaseAIAgent):
         4. 用"选择[玩家ID]"格式说明投票决定
         """
 
+    def _generate_discussion_prompt(self, game_state: Dict[str, Any]) -> str:
+        base_prompt = super()._generate_discussion_prompt(game_state)
+        base_prompt += "\n\n你是一个普通村民，没有特殊技能。你的目标是找出并投票处决狼人。"
+        return base_prompt
+
+    def _generate_vote_prompt(self, game_state: Dict[str, Any]) -> str:
+        base_prompt = super()._generate_vote_prompt(game_state)
+        base_prompt += "\n\n你是一个普通村民，没有特殊技能。请根据之前的讨论，投票选择你认为最可能是狼人的玩家。"
+        return base_prompt
+
 class SeerAgent(BaseAIAgent):
     def __init__(self, config: Dict[str, Any], role: BaseRole):
         super().__init__(config, role)
-        self.checked_results = {}  # 记录查验结果
+        self.role: Seer = role  # 类型提示
+
+    def _generate_discussion_prompt(self, game_state: Dict[str, Any]) -> str:
+        base_prompt = super()._generate_discussion_prompt(game_state)
+        
+        # 添加查验历史
+        check_history = []
+        for target_id, is_wolf in self.role.checked_players.items():
+            if target_id in game_state["players"]:
+                target_name = game_state["players"][target_id]["name"]
+                result = "狼人" if is_wolf else "好人"
+                check_history.append(f"- {target_name}: {result}")
+        
+        if check_history:
+            base_prompt += "\n\n你的查验历史："
+            base_prompt += "\n" + "\n".join(check_history)
+        
+        return base_prompt
+
+    def _generate_vote_prompt(self, game_state: Dict[str, Any]) -> str:
+        base_prompt = super()._generate_vote_prompt(game_state)
+        
+        # 添加查验历史到投票提示词
+        check_history = []
+        for target_id, is_wolf in self.role.checked_players.items():
+            if target_id in game_state["players"]:
+                target_name = game_state["players"][target_id]["name"]
+                result = "狼人" if is_wolf else "好人"
+                check_history.append(f"- {target_name}: {result}")
+        
+        if check_history:
+            base_prompt += "\n\n你的查验历史："
+            base_prompt += "\n" + "\n".join(check_history)
+        
+        return base_prompt
 
     def check_player(self, game_state: Dict[str, Any]) -> Dict[str, Any]:
-        """夜晚查验玩家身份"""
+        """选择要查验的玩家
+        
+        Returns:
+            Dict: 包含查验目标的字典
+            {
+                "type": "check",
+                "target": target_id
+            }
+        """
+        # 生成查验提示词
         prompt = self._generate_check_prompt(game_state)
+        
+        # 获取AI回复
         response = self.ask_ai(prompt, self._get_seer_check_prompt())
         
-        target = self._extract_target(response)
-        if target:
-            # 记录查验结果，但不暴露具体角色
-            is_wolf = game_state["players"][target]["role"] == "werewolf"
-            self.checked_results[target] = "werewolf" if is_wolf else "good"
-            
+        # 从响应中提取目标ID
+        target_id = self._extract_target(response)
+        
         return {
             "type": "check",
-            "target": target,
-            "reason": response
+            "target": target_id
         }
 
     def _get_seer_check_prompt(self) -> str:
-        return """你是预言家，需要选择一个玩家查验身份。
+        """获取预言家查验的系统提示词"""
+        return """你是预言家，需要选择一个玩家进行查验。
         要考虑：
-        1. 分析可疑玩家的行为
-        2. 避免重复查验同一个人
-        3. 优先查验最可疑的对象
+        1. 优先查验可疑的玩家
+        2. 避免重复查验同一个玩家
+        3. 给出合理的查验理由
         4. 用"选择[玩家ID]"格式说明查验目标
         """
 
     def _generate_check_prompt(self, game_state: Dict[str, Any]) -> str:
-        return f"""
-        当前游戏状态:
-        - 回合: {game_state['current_round']}
-        - 存活玩家: {[f"{info['name']}({pid})" for pid, info in game_state['players'].items() if info['is_alive']]}
-        - 已查验玩家: {list(self.checked_results.keys())}
-        - 查验结果: {self.checked_results}
+        """生成查验提示词"""
+        alive_players = [
+            (pid, info["name"]) 
+            for pid, info in game_state["players"].items() 
+            if info["is_alive"] and pid != self.role.player_id
+        ]
         
-        请选择今晚要查验的玩家：
-        1. 分析每个玩家的行为
-        2. 考虑历史发言内容
-        3. 给出详细的理由
+        # 添加查验历史
+        check_history = []
+        for target_id, is_wolf in self.role.checked_players.items():
+            if target_id in game_state["players"]:
+                target_name = game_state["players"][target_id]["name"]
+                result = "狼人" if is_wolf else "好人"
+                check_history.append(f"- {target_name}: {result}")
+        
+        prompt = f"""
+        你是预言家，现在是第 {game_state['current_round']} 回合的夜晚。
+        请选择一个玩家进行查验。
+
+        当前存活的玩家：
+        {chr(10).join([f'- {name}({pid})' for pid, name in alive_players])}
+        """
+        
+        if check_history:
+            prompt += "\n\n你的查验历史："
+            prompt += "\n" + "\n".join(check_history)
+            
+        prompt += """
+        
+        请选择一个你想查验的玩家，直接回复玩家ID即可。
+        注意：
+        1. 只能查验存活的玩家
+        2. 不要查验自己
+        3. 建议不要重复查验同一个玩家
         4. 用"选择[玩家ID]"格式说明查验目标
         """
+        
+        return prompt
 
 class WitchAgent(BaseAIAgent):
+    def __init__(self, config: Dict[str, Any], role: BaseRole):
+        super().__init__(config, role)
+        self.role: Witch = role  # 类型提示
+
     def use_potion(self, game_state: Dict[str, Any], victim_id: Optional[str] = None) -> Dict[str, Any]:
         """决定使用解药或毒药"""
         prompt = self._generate_potion_prompt(game_state, victim_id)
@@ -561,7 +642,43 @@ class WitchAgent(BaseAIAgent):
         """
         return prompt
 
+    def _generate_discussion_prompt(self, game_state: Dict[str, Any]) -> str:
+        base_prompt = super()._generate_discussion_prompt(game_state)
+        
+        # 添加女巫特殊状态
+        witch_status = []
+        if self.role.has_medicine:
+            witch_status.append("解药未使用")
+        if self.role.has_poison:
+            witch_status.append("毒药未使用")
+        
+        if witch_status:
+            base_prompt += "\n\n你的技能状态："
+            base_prompt += "\n" + "\n".join(witch_status)
+        
+        return base_prompt
+
+    def _generate_vote_prompt(self, game_state: Dict[str, Any]) -> str:
+        base_prompt = super()._generate_vote_prompt(game_state)
+        
+        # 添加女巫特殊状态
+        witch_status = []
+        if self.role.has_medicine:
+            witch_status.append("解药未使用")
+        if self.role.has_poison:
+            witch_status.append("毒药未使用")
+        
+        if witch_status:
+            base_prompt += "\n\n你的技能状态："
+            base_prompt += "\n" + "\n".join(witch_status)
+        
+        return base_prompt
+
 class HunterAgent(BaseAIAgent):
+    def __init__(self, config: Dict[str, Any], role: BaseRole):
+        super().__init__(config, role)
+        self.role: Hunter = role  # 类型提示
+
     def shoot(self, game_state: Dict[str, Any]) -> Dict[str, Any]:
         """决定开枪打死谁"""
         prompt = self._generate_shoot_prompt(game_state)
@@ -596,6 +713,38 @@ class HunterAgent(BaseAIAgent):
         3. 给出详细的理由
         4. 用"选择[玩家ID]"格式说明射击目标
         """
+
+    def _generate_discussion_prompt(self, game_state: Dict[str, Any]) -> str:
+        base_prompt = super()._generate_discussion_prompt(game_state)
+        
+        # 添加猎人特殊状态
+        hunter_status = []
+        if self.role.can_shoot:
+            hunter_status.append("猎枪未使用")
+        else:
+            hunter_status.append("猎枪已使用")
+        
+        if hunter_status:
+            base_prompt += "\n\n你的技能状态："
+            base_prompt += "\n" + "\n".join(hunter_status)
+        
+        return base_prompt
+
+    def _generate_vote_prompt(self, game_state: Dict[str, Any]) -> str:
+        base_prompt = super()._generate_vote_prompt(game_state)
+        
+        # 添加猎人特殊状态
+        hunter_status = []
+        if self.role.can_shoot:
+            hunter_status.append("猎枪未使用")
+        else:
+            hunter_status.append("猎枪已使用")
+        
+        if hunter_status:
+            base_prompt += "\n\n你的技能状态："
+            base_prompt += "\n" + "\n".join(hunter_status)
+        
+        return base_prompt
 
 def create_ai_agent(config: Dict[str, Any], role: BaseRole) -> BaseAIAgent:
     """工厂函数：根据角色创建对应的 AI 代理"""

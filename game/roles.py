@@ -46,7 +46,7 @@ class Villager(BaseRole):
 class Seer(BaseRole):
     def __init__(self, player_id: str, name: str):
         super().__init__(player_id, name, RoleType.SEER)
-        self.checked_players = set()  # 记录已经查验过的玩家
+        self.checked_players = {}  # 改为字典，存储玩家ID和查验结果
 
     def can_check(self, target_id: str) -> bool:
         """检查是否可以查验目标玩家
@@ -57,20 +57,23 @@ class Seer(BaseRole):
         Returns:
             bool: 是否可以查验
         """
-        # 预言家每晚都可以查验一个人，但不能查验已经死亡的玩家
-        # 也不建议查验同一个人（虽然规则上允许）
         if not self.is_alive:
             self.logger.debug(f"预言家已死亡，无法查验")
             return False
         if target_id in self.checked_players:
-            self.logger.debug(f"玩家 {target_id} 已被查验过")
+            self.logger.debug(f"玩家 {target_id} 已被查验过，结果是{'狼人' if self.checked_players[target_id] else '好人'}")
             return True  # 允许重复查验，但会给出警告
         return True
 
-    def check_role(self, target_id: str) -> None:
-        """记录查验过的玩家"""
-        self.checked_players.add(target_id)
-        self.logger.info(f"预言家查验了玩家 {target_id}")
+    def check_role(self, target_id: str, is_wolf: bool) -> None:
+        """记录查验结果
+        
+        Args:
+            target_id: 目标玩家ID
+            is_wolf: 是否是狼人
+        """
+        self.checked_players[target_id] = is_wolf
+        self.logger.info(f"预言家查验了玩家 {target_id}，结果是{'狼人' if is_wolf else '好人'}")
 
 class Witch(BaseRole):
     def __init__(self, player_id: str, name: str):

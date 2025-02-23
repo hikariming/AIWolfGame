@@ -246,13 +246,20 @@ class GameController:
                         target_role = self.players[target_id]
                         is_wolf = target_role.is_wolf()
                         # 记录查验结果
-                        seer.check_role(target_id)
+                        seer.check_role(target_id, is_wolf)
                         # 记录预言家的查验准确率
                         self._log_ability_usage(seer_id, "查验", True)
                         self._log_role_recognition(seer_id, target_id, is_wolf)
                         
                         print(f"\n{self.players[seer_id].name} 查验了 {self.players[target_id].name}")
                         print(f"查验结果：{'是狼人' if is_wolf else '是好人'}")
+                        
+                        # 记录查验结果到游戏状态
+                        if "seer_checks" not in self.game_state:
+                            self.game_state["seer_checks"] = {}
+                        if seer_id not in self.game_state["seer_checks"]:
+                            self.game_state["seer_checks"][seer_id] = {}
+                        self.game_state["seer_checks"][seer_id][target_id] = is_wolf
                         
                         # 记录查验结果
                         self.game_state["history"].append({
@@ -518,6 +525,9 @@ class GameController:
                 print("无补充发言")
             
             time.sleep(self.delay)
+        
+        # 记录本轮所有讨论
+        self.metrics_logger.log_round_discussion(self.current_round, round_speeches)
 
     def _evaluate_speech_influence(self, speech: str, speaker_id: str) -> bool:
         """评估发言的影响力
@@ -703,15 +713,36 @@ class GameController:
                 voters = [detail["voter_name"] for detail in vote_details if detail["target"] == pid]
                 print(f"  投票者: {', '.join(voters)}")
             
+            # 准备投票结果数据
+            vote_results = {
+                "vote_counts": votes,
+                "vote_details": vote_details,
+                "player_names": {pid: self.players[pid].name for pid in self.players},
+                "max_votes": max_votes,
+                "is_tie": len(most_voted) > 1
+            }
+            
             if len(most_voted) > 1:
                 print("\n【警告】出现平票！")
                 print(f"平票玩家：{', '.join([self.players[pid].name for pid in most_voted])}")
                 # 随机选择一个
                 voted_out = random.choice(most_voted)
                 print(f"\n随机选择了 {self.players[voted_out].name}")
+                vote_results.update({
+                    "tied_players": [self.players[pid].name for pid in most_voted],
+                    "voted_out": voted_out,
+                    "voted_out_name": self.players[voted_out].name
+                })
             else:
                 voted_out = most_voted[0]
                 print(f"\n投票最高的是 {self.players[voted_out].name}，得到 {max_votes} 票")
+                vote_results.update({
+                    "voted_out": voted_out,
+                    "voted_out_name": self.players[voted_out].name
+                })
+            
+            # 记录本轮投票结果
+            self.metrics_logger.log_round_vote(self.current_round, vote_results)
             
             print(f"\n{self.players[voted_out].name} 被投票出局")
             

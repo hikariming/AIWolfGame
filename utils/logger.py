@@ -50,7 +50,8 @@ class GameLogger:
                 "total_deaths": 0,
                 "ability_uses": 0,
                 "votes": []
-            }
+            },
+            "round_records": []  # 新增：每轮详细记录
         }
         self._setup_logger()
         self._init_metrics()
@@ -410,7 +411,40 @@ class GameLogger:
             f.write(f"游戏时间: {self.game_record['start_time']}\n")
             f.write(f"游戏时长: {self.game_record['game_stats']['total_rounds']} 回合\n\n")
             
-            f.write("游戏统计:\n")
+            # 添加每轮详细记录
+            f.write("\n=== 每轮详细记录 ===\n")
+            for round_record in self.game_record["round_records"]:
+                round_num = round_record["round"]
+                f.write(f"\n第 {round_num} 回合\n")
+                f.write("-" * 40 + "\n")
+                
+                # 讨论记录
+                if "discussions" in round_record:
+                    f.write("\n讨论内容：\n")
+                    for disc in round_record["discussions"]:
+                        f.write(f"{disc['player']}：\n")
+                        f.write(f"{disc['content']}\n")
+                
+                # 投票记录
+                if "vote_results" in round_record:
+                    f.write("\n投票结果：\n")
+                    vote_results = round_record["vote_results"]
+                    for player_id, votes in vote_results["vote_counts"].items():
+                        f.write(f"- {vote_results['player_names'][player_id]}: {votes} 票\n")
+                        voters = [v["voter_name"] for v in vote_results["vote_details"] if v["target"] == player_id]
+                        f.write(f"  投票者: {', '.join(voters)}\n")
+                    
+                    if vote_results.get("is_tie"):
+                        f.write("\n出现平票！\n")
+                        f.write(f"平票玩家：{', '.join(vote_results['tied_players'])}\n")
+                        f.write(f"随机选择了 {vote_results['voted_out_name']}\n")
+                    else:
+                        f.write(f"\n投票最高的是 {vote_results['voted_out_name']}，得到 {vote_results['max_votes']} 票\n")
+                
+                f.write("\n")
+            
+            # 现有的统计信息
+            f.write("\n=== 游戏统计 ===\n")
             f.write(f"- 总死亡数: {self.game_record['game_stats']['total_deaths']}\n")
             f.write(f"- 技能使用次数: {self.game_record['game_stats']['ability_uses']}\n")
             f.write(f"- 投票次数: {len(self.game_record['game_stats']['votes'])}\n")
@@ -443,6 +477,102 @@ class GameLogger:
                 f.write(f"- {metric_name}: {value:.2%}\n")
             
             f.write(f"\n胜利方: {self.game_record['final_result']['winner']}\n")
+
+    def log_round_discussion(self, round_num: int, discussions: List[Dict]):
+        """记录每轮的讨论内容
+        
+        Args:
+            round_num: 当前回合数
+            discussions: 讨论内容列表，每项包含说话者和内容
+        """
+        round_record = {
+            "round": round_num,
+            "phase": "discussion",
+            "discussions": discussions,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        # 添加到轮次记录
+        self._add_to_round_record(round_num, "discussions", discussions)
+        
+        # 记录到事件
+        self.game_record["events"].append({
+            "type": "round_discussion",
+            "round": round_num,
+            "discussions": discussions,
+            "timestamp": datetime.now().isoformat()
+        })
+        
+        # 记录日志
+        logging.info(f"\n=== 第 {round_num} 回合讨论记录 ===")
+        for disc in discussions:
+            logging.info(f"{disc['player']}: {disc['content']}")
+
+    def log_round_vote(self, round_num: int, vote_results: Dict):
+        """记录每轮的投票结果
+        
+        Args:
+            round_num: 当前回合数
+            vote_results: 投票结果，包含得票情况、投票详情等
+        """
+        vote_record = {
+            "round": round_num,
+            "phase": "vote",
+            "vote_results": vote_results,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        # 添加到轮次记录
+        self._add_to_round_record(round_num, "vote_results", vote_results)
+        
+        # 记录到事件
+        self.game_record["events"].append({
+            "type": "round_vote",
+            "round": round_num,
+            "vote_results": vote_results,
+            "timestamp": datetime.now().isoformat()
+        })
+        
+        # 记录日志
+        logging.info(f"\n=== 第 {round_num} 回合投票结果 ===")
+        logging.info("得票情况：")
+        for player_id, votes in vote_results["vote_counts"].items():
+            logging.info(f"- {vote_results['player_names'][player_id]}: {votes} 票")
+            voters = [v["voter_name"] for v in vote_results["vote_details"] if v["target"] == player_id]
+            logging.info(f"  投票者: {', '.join(voters)}")
+        
+        if vote_results.get("is_tie"):
+            logging.info("\n出现平票！")
+            logging.info(f"平票玩家：{', '.join(vote_results['tied_players'])}")
+            logging.info(f"随机选择了 {vote_results['voted_out_name']}")
+        else:
+            logging.info(f"\n投票最高的是 {vote_results['voted_out_name']}，得到 {vote_results['max_votes']} 票")
+
+    def _add_to_round_record(self, round_num: int, record_type: str, data: Any):
+        """添加数据到轮次记录
+        
+        Args:
+            round_num: 当前回合数
+            record_type: 记录类型（discussions/vote_results）
+            data: 要记录的数据
+        """
+        # 查找当前回合的记录
+        round_record = None
+        for record in self.game_record["round_records"]:
+            if record["round"] == round_num:
+                round_record = record
+                break
+        
+        # 如果没有找到，创建新的回合记录
+        if round_record is None:
+            round_record = {
+                "round": round_num,
+                "timestamp": datetime.now().isoformat()
+            }
+            self.game_record["round_records"].append(round_record)
+        
+        # 添加数据
+        round_record[record_type] = data
 
 def setup_logger(debug: bool = False) -> GameLogger:
     """创建并返回游戏日志记录器"""
