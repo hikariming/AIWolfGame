@@ -1,7 +1,7 @@
 from typing import Dict, List, Optional
 import time
 import logging
-from .roles import BaseRole, Werewolf, Villager, RoleType
+from .roles import BaseRole, Werewolf, Villager, RoleType, Seer, Witch, Hunter
 from .ai_players import create_ai_agent, BaseAIAgent
 import random
 import re
@@ -61,9 +61,19 @@ class GameController:
         # 创建角色和AI代理
         for role_type, players in self.config["roles"].items():
             for player_id, info in players.items():
+                # 根据角色类型创建对应的角色实例
                 if role_type == "werewolf":
                     role = Werewolf(player_id, info["name"])
                     self.game_state["alive_count"]["werewolf"] += 1
+                elif role_type == "seer":
+                    role = Seer(player_id, info["name"])
+                    self.game_state["alive_count"]["villager"] += 1
+                elif role_type == "witch":
+                    role = Witch(player_id, info["name"])
+                    self.game_state["alive_count"]["villager"] += 1
+                elif role_type == "hunter":
+                    role = Hunter(player_id, info["name"])
+                    self.game_state["alive_count"]["villager"] += 1
                 else:
                     role = Villager(player_id, info["name"])
                     self.game_state["alive_count"]["villager"] += 1
@@ -76,7 +86,11 @@ class GameController:
                 }
                 
                 # 获取AI配置
-                ai_type = info["ai_type"]
+                ai_type = info.get("ai_type")
+                if not ai_type:
+                    self.logger.warning(f"玩家 {player_id} 没有指定AI类型，使用默认配置")
+                    ai_type = "default"
+                
                 if ai_type not in self.config["ai_players"]:
                     raise ValueError(f"未知的AI类型: {ai_type}")
                 
@@ -117,26 +131,28 @@ class GameController:
         self.game_state["phase"] = "night"
         time.sleep(self.delay)
 
-        # 获取存活的狼人
+        # 获取存活的狼人和神职玩家
         wolves = [pid for pid, role in self.players.items() 
                  if role.is_wolf() and role.is_alive]
-        
-        # 获取存活的神职玩家
         seers = [pid for pid, role in self.players.items() 
-                if role.role_type == RoleType.SEER and role.is_alive]
+                if isinstance(role, Seer) and role.is_alive]
         witches = [pid for pid, role in self.players.items() 
-                  if role.role_type == RoleType.WITCH and role.is_alive]
+                  if isinstance(role, Witch) and role.is_alive]
+        hunters = [pid for pid, role in self.players.items()
+                  if isinstance(role, Hunter) and role.is_alive]
         
         victim_id = None  # 狼人的目标
         saved_by_witch = False  # 是否被女巫救活
-        poisoned_by_witch = None  # 被女巫毒死的玩家
+        poisoned_by_witch = None  # 女巫毒死的玩家
 
+        # 狼人行动
         if wolves:
             print("\n狼人们正在商讨...")
             time.sleep(self.delay)
             
             # 狼人讨论
             wolf_opinions = []
+            wolf_targets = []  # 收集所有狼人的目标
             
             for wolf_id in wolves:
                 agent = self.ai_agents[wolf_id]
@@ -145,15 +161,14 @@ class GameController:
                 if result["type"] == "kill":
                     print(f"\n{self.players[wolf_id].name} 的想法：")
                     print(result["content"])
+                    target = result.get("target")
+                    if target:
+                        wolf_targets.append(target)
                     wolf_opinions.append({
                         "wolf": self.players[wolf_id].name,
                         "opinion": result["content"],
-                        "target": result.get("target")
+                        "target": target
                     })
-                    if victim_id is None and result.get("target"):
-                        victim_id = result["target"]
-                        # 记录狼人的欺骗尝试
-                        self._log_deception_attempt(wolf_id, True)
                 
                 time.sleep(self.delay)
             
@@ -167,56 +182,91 @@ class GameController:
                     "opinions": wolf_opinions
                 })
                 victim_id = None
+            else:
+                # 如果有多个狼人，随机选择一个目标
+                if wolf_targets:
+                    victim_id = random.choice(wolf_targets)
+                    self._log_deception_attempt(wolves[0], True)
         
         # 预言家行动
         if seers:
             print("\n预言家正在行动...")
             for seer_id in seers:
                 agent = self.ai_agents[seer_id]
+                seer = self.players[seer_id]
                 result = agent.check_player(self.game_state)
                 
                 if result["type"] == "check" and result["target"]:
                     target_id = result["target"]
-                    target_role = self.players[target_id]
-                    is_wolf = target_role.is_wolf()
-                    # 记录预言家的查验准确率
-                    self._log_ability_usage(seer_id, "查验", True)
-                    self._log_role_recognition(seer_id, target_id, is_wolf)
                     
-                    # 不要在日志中暴露预言家身份
-                    print(f"\n{self.players[seer_id].name} 完成了行动")
-                    
-                    # 记录查验结果（只记录在游戏状态中，不输出）
-                    self.game_state["history"].append({
-                        "round": self.current_round,
-                        "phase": "night",
-                        "event": "seer_check",
-                        "seer": seer_id,
-                        "target": target_id,
-                        "is_wolf": is_wolf
-                    })
+                    # 检查是否可以查验
+                    if seer.can_check(target_id):
+                        target_role = self.players[target_id]
+                        is_wolf = target_role.is_wolf()
+                        # 记录查验结果
+                        seer.check_role(target_id)
+                        # 记录预言家的查验准确率
+                        self._log_ability_usage(seer_id, "查验", True)
+                        self._log_role_recognition(seer_id, target_id, is_wolf)
+                        
+                        print(f"\n{self.players[seer_id].name} 查验了 {self.players[target_id].name}")
+                        print(f"查验结果：{'是狼人' if is_wolf else '是好人'}")
+                        
+                        # 记录查验结果
+                        self.game_state["history"].append({
+                            "round": self.current_round,
+                            "phase": "night",
+                            "event": "seer_check",
+                            "seer": seer_id,
+                            "target": target_id,
+                            "is_wolf": is_wolf
+                        })
+                    else:
+                        print(f"\n{self.players[seer_id].name} 选择的查验目标无效")
                 
                 time.sleep(self.delay)
         
         # 如果有人被狼人杀死
         if victim_id:
+            print(f"\n今晚，{self.players[victim_id].name} 被狼人袭击了...")
             # 女巫行动
             if witches:
                 print("\n女巫正在行动...")
                 for witch_id in witches:
                     agent = self.ai_agents[witch_id]
+                    witch = self.players[witch_id]
                     result = agent.use_potion(self.game_state, victim_id)
                     
                     if result["type"] == "save":
-                        saved_by_witch = True
-                        self.players[witch_id].use_medicine()
-                        # 不要在日志中暴露女巫身份
-                        print(f"\n{self.players[witch_id].name} 使用了药水")
+                        # 检查是否可以使用解药
+                        if witch.can_save(is_first_night=self.current_round == 1):
+                            saved_by_witch = True
+                            witch.use_medicine()
+                            # 记录女巫的救人
+                            self._log_ability_usage(witch_id, "救人", True)
+                            print(f"\n{self.players[witch_id].name} 使用了解药，救活了 {self.players[victim_id].name}")
+                        else:
+                            if not witch.has_medicine:
+                                print(f"\n{self.players[witch_id].name} 的解药已经用完了")
+                            elif witch.used_medicine_this_round:
+                                print(f"\n{self.players[witch_id].name} 本回合已经使用过解药")
+                            else:
+                                print(f"\n{self.players[witch_id].name} 选择不使用解药")
                     elif result["type"] == "poison" and result["target"]:
-                        poisoned_by_witch = result["target"]
-                        self.players[witch_id].use_poison()
-                        # 不要在日志中暴露女巫身份
-                        print(f"\n{self.players[witch_id].name} 使用了药水")
+                        # 检查是否可以使用毒药
+                        if witch.can_poison(is_first_night=self.current_round == 1):
+                            poisoned_by_witch = result["target"]
+                            witch.use_poison()
+                            # 记录女巫的毒人
+                            self._log_ability_usage(witch_id, "毒人", True)
+                            print(f"\n{self.players[witch_id].name} 使用了毒药")
+                            if self.current_round == 1:
+                                print("【系统提示】第一晚使用毒药可能不是最佳选择")
+                        else:
+                            if not witch.has_poison:
+                                print(f"\n{self.players[witch_id].name} 的毒药已经用完了")
+                            else:
+                                print(f"\n{self.players[witch_id].name} 选择不使用毒药")
                     
                     # 记录女巫行动
                     self.game_state["history"].append({
@@ -225,17 +275,61 @@ class GameController:
                         "event": "witch_action",
                         "witch": witch_id,
                         "action_type": result["type"],
-                        "target": result["target"] if "target" in result else None
+                        "target": result["target"] if "target" in result else None,
+                        "success": saved_by_witch or poisoned_by_witch is not None
                     })
+                    
+                    # 重置女巫的回合状态
+                    witch.reset_round()
                     
                     time.sleep(self.delay)
         
         # 处理夜晚死亡
-        if victim_id and not saved_by_witch:
-            self._handle_death(victim_id, "夜晚死亡")
+        night_deaths = []
         
+        # 处理狼人杀人
+        if victim_id and not saved_by_witch:
+            night_deaths.append((victim_id, "被狼人杀死"))
+        
+        # 处理女巫毒人
         if poisoned_by_witch:
-            self._handle_death(poisoned_by_witch, "夜晚死亡")
+            night_deaths.append((poisoned_by_witch, "被毒死"))
+        
+        # 执行死亡
+        for player_id, reason in night_deaths:
+            self._handle_death(player_id, reason)
+            
+            # 如果死者是猎人，确认其死亡状态
+            if isinstance(self.players[player_id], Hunter):
+                hunter = self.players[player_id]
+                hunter.confirm_death()
+                
+                # 让猎人开枪
+                if hunter.can_use_gun():
+                    print(f"\n{hunter.name} 倒下的瞬间，抽出了猎枪...")
+                    agent = self.ai_agents[player_id]
+                    result = agent.shoot(self.game_state)
+                    
+                    if result["type"] == "shoot" and result["target"]:
+                        target_id = result["target"]
+                        if target_id in self.players and self.players[target_id].is_alive:
+                            hunter.use_gun()
+                            self._log_ability_usage(player_id, "开枪", True)
+                            print(f"\n{hunter.name} 对准了 {self.players[target_id].name}...")
+                            time.sleep(self.delay)
+                            print("砰！一声枪响...")
+                            time.sleep(self.delay)
+                            print(f"{self.players[target_id].name} 被猎人射杀")
+                            self._handle_death(target_id, "被猎人射杀")
+                        else:
+                            print(f"\n{hunter.name} 的目标无效，猎枪未能发射")
+                    else:
+                        print(f"\n{hunter.name} 没有开枪，带着遗憾离开了")
+                else:
+                    if not hunter.can_shoot:
+                        print(f"\n{hunter.name} 已经开过枪了")
+                    else:
+                        print(f"\n{hunter.name} 没有机会开枪就离开了")
 
     def _handle_death(self, player_id: str, reason: str) -> None:
         """处理玩家死亡"""
@@ -262,19 +356,6 @@ class GameController:
         
         print(f"\n{role.name} {reason}")
         
-        # 如果是猎人死亡，触发开枪技能
-        if role.role_type == RoleType.HUNTER and role.can_use_gun():
-            # 不要在日志中暴露猎人身份
-            print(f"\n{role.name} 发动临终技能...")
-            agent = self.ai_agents[player_id]
-            result = agent.shoot(self.game_state)
-            
-            if result["type"] == "shoot" and result["target"]:
-                target_id = result["target"]
-                print(f"\n{role.name} 带走了 {self.players[target_id].name}")
-                role.use_gun()
-                self._handle_death(target_id, "被带走")
-
         # 记录生存率
         self._log_survival(player_id)
 
@@ -421,6 +502,7 @@ class GameController:
     def voting_phase(self) -> None:
         """投票环节"""
         print("\n=== 开始投票 ===")
+        print("\n请各位玩家依次进行投票...")
         time.sleep(self.delay)
         
         votes = {}
@@ -428,6 +510,13 @@ class GameController:
         
         # 只有存活玩家才能投票
         alive_players = [pid for pid, role in self.players.items() if role.is_alive]
+        
+        # 显示存活玩家列表
+        print("\n当前存活玩家：")
+        for pid in alive_players:
+            print(f"- {self.players[pid].name}")
+        print("\n开始投票...")
+        
         for player_id in alive_players:
             role = self.players[player_id]
             agent = self.ai_agents[player_id]
@@ -436,6 +525,7 @@ class GameController:
             if not role.is_alive:
                 continue
             
+            print(f"\n轮到 {role.name} 投票...")
             # 获取投票目标和投票理由
             vote_result = agent.vote(self.game_state)
             target_id = vote_result.get("target")
@@ -460,7 +550,8 @@ class GameController:
                     "target_name": self.players[target_id].name,
                     "reason": reason
                 }
-                print(f"{role.name} 投票给了 {self.players[target_id].name}，理由：{reason}")
+                print(f"{role.name} 投票给了 {self.players[target_id].name}")
+                print(f"投票理由：{reason}")
                 vote_details.append(vote_detail)
                 
                 # 记录投票准确率
@@ -471,7 +562,8 @@ class GameController:
                 if possible_targets:
                     target_id = random.choice(possible_targets)
                     votes[target_id] = votes.get(target_id, 0) + 1
-                    print(f"{role.name} 的投票无效或试图投给自己，随机投给了 {self.players[target_id].name}")
+                    print(f"\n{role.name} 的投票无效或试图投给自己")
+                    print(f"系统随机指定投票给 {self.players[target_id].name}")
                     vote_detail = {
                         "voter": player_id,
                         "voter_name": role.name,
@@ -493,17 +585,20 @@ class GameController:
             max_votes = max(votes.values())
             most_voted = [pid for pid, count in votes.items() if count == max_votes]
             
-            print("\n投票结果统计：")
+            print("\n=== 投票结果统计 ===")
+            print("\n得票情况：")
             for pid, count in votes.items():
-                print(f"{self.players[pid].name}: {count}票")
+                print(f"- {self.players[pid].name}: {count} 票")
             
             if len(most_voted) > 1:
-                print("\n出现平票！")
+                print("\n【警告】出现平票！")
+                print(f"平票玩家：{', '.join([self.players[pid].name for pid in most_voted])}")
                 # 随机选择一个
                 voted_out = random.choice(most_voted)
-                print(f"随机选择了 {self.players[voted_out].name}")
+                print(f"\n随机选择了 {self.players[voted_out].name}")
             else:
                 voted_out = most_voted[0]
+                print(f"\n投票最高的是 {self.players[voted_out].name}，得到 {max_votes} 票")
             
             print(f"\n{self.players[voted_out].name} 被投票出局")
             
@@ -513,7 +608,8 @@ class GameController:
                 "phase": "vote",
                 "votes": vote_details,
                 "result": voted_out,
-                "is_tie": len(most_voted) > 1
+                "is_tie": len(most_voted) > 1,
+                "vote_counts": {pid: count for pid, count in votes.items()}
             })
             
             # 处理出局，允许发表遗言
