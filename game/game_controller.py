@@ -5,6 +5,7 @@ from .roles import BaseRole, Werewolf, Villager, RoleType
 from .ai_players import create_ai_agent, BaseAIAgent
 import random
 import re
+from utils.logger import GameLogger
 
 class GameController:
     def __init__(self, config: Dict):
@@ -23,7 +24,7 @@ class GameController:
         self.delay = config.get("delay", 1.0)  # 动作延迟时间
         
         # 初始化评估指标记录器
-        self.metrics_logger = logging.getLogger("game_metrics")
+        self.metrics_logger = GameLogger(debug=config.get("debug", False))
 
     def _log_role_recognition(self, player_id: str, target_id: str, guess_is_wolf: bool):
         """记录角色识别准确率"""
@@ -440,7 +441,16 @@ class GameController:
             target_id = vote_result.get("target")
             reason = vote_result.get("reason", "没有给出具体理由")
             
-            if target_id and target_id in self.players:  # 确保投票目标有效
+            # 验证投票目标的有效性
+            valid_target = False
+            if target_id:
+                # 确保目标玩家存在且存活，且不是自己
+                if (target_id in self.players and 
+                    self.players[target_id].is_alive and 
+                    target_id != player_id):
+                    valid_target = True
+            
+            if valid_target:
                 votes[target_id] = votes.get(target_id, 0) + 1
                 vote_detail = {
                     "voter": player_id,
@@ -456,13 +466,24 @@ class GameController:
                 # 记录投票准确率
                 self._log_vote(player_id, target_id)
             else:
-                # 如果没有有效的投票目标，随机选择一个存活玩家（除了自己）
+                # 如果投票无效，随机选择一个存活玩家（除了自己）
                 possible_targets = [pid for pid in alive_players if pid != player_id]
                 if possible_targets:
                     target_id = random.choice(possible_targets)
                     votes[target_id] = votes.get(target_id, 0) + 1
-                    print(f"{role.name} 的投票无效，随机投给了 {self.players[target_id].name}")
-                self.logger.warning(f"无效的投票目标: {target_id}")
+                    print(f"{role.name} 的投票无效或试图投给自己，随机投给了 {self.players[target_id].name}")
+                    vote_detail = {
+                        "voter": player_id,
+                        "voter_name": role.name,
+                        "voter_role": role.role_type.value,
+                        "target": target_id,
+                        "target_name": self.players[target_id].name,
+                        "reason": "投票无效，系统随机指定"
+                    }
+                    vote_details.append(vote_detail)
+                    self._log_vote(player_id, target_id)
+                else:
+                    self.logger.warning(f"{role.name} 无法进行有效投票：没有合适的目标")
             
             time.sleep(self.delay)
 

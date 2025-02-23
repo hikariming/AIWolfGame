@@ -2,55 +2,48 @@
   "game_settings": {
     "total_players": 8,
     "day_time_limit": 180,
-    "night_time_limit": 60
+    "night_time_limit": 60,
+    "role_rotation_interval": 20
   },
   "roles": {
     "werewolf": {
-      "wolf1": {
-        "ai_type": "gpt-4",
+      "player1": {
         "name": "张大胆",
         "personality": "狡猾"
       },
-      "wolf2": {
-        "ai_type": "gpt-4",
+      "player2": {
         "name": "李勇",
         "personality": "激进"
       }
     },
     "seer": {
-      "seer1": {
-        "ai_type": "gpt-4",
+      "player3": {
         "name": "王智",
         "personality": "冷静"
       }
     },
     "witch": {
-      "witch1": {
-        "ai_type": "gpt-4",
+      "player4": {
         "name": "赵灵",
         "personality": "谨慎"
       }
     },
     "hunter": {
-      "hunter1": {
-        "ai_type": "gpt-4",
+      "player5": {
         "name": "钱强",
         "personality": "果断"
       }
     },
     "villager": {
-      "villager1": {
-        "ai_type": "deepseek",
+      "player6": {
         "name": "孙一",
         "personality": "谨慎"
       },
-      "villager2": {
-        "ai_type": "gemini",
+      "player7": {
         "name": "周二",
         "personality": "积极"
       },
-      "villager3": {
-        "ai_type": "claude35",
+      "player8": {
         "name": "吴三",
         "personality": "多疑"
       }

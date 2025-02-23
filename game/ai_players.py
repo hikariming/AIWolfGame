@@ -95,14 +95,12 @@ class BaseAIAgent:
             
             response = self.client.chat.completions.create(
                 model=self.config["model"],
-                messages=messages,
-                temperature=0.7,
-                max_tokens=1000
-            )
+                messages=messages
+                                        )
             return response.choices[0].message.content
         except Exception as e:
             self.logger.error(f"AI 调用失败: {str(e)}")
-            return "【皱眉思考】经过深思熟虑，我认为villager1比较可疑。选择villager1"
+            return "【皱眉思考】经过深思熟虑，我认为player6比较可疑。选择player6"
 
     def _extract_target(self, response: str) -> Optional[str]:
         """从 AI 响应中提取目标玩家 ID
@@ -116,13 +114,16 @@ class BaseAIAgent:
         try:
             # 使用正则表达式匹配以下格式：
             # 1. 选择[玩家ID]
-            # 2. 选择玩家ID
-            # 3. 选择 玩家ID
-            # 4. 选择：玩家ID
+            # 2. 选择 玩家ID
+            # 3. 选择：玩家ID
+            # 4. (玩家ID)
+            # 5. 玩家ID(xxx)
             patterns = [
-                r'选择\[([^\]]+)\]',  # 匹配 选择[wolf1] 或 选择[villager1]
-                r'选择\s*(\w+\d*)',   # 匹配 选择wolf1 或 选择 villager1
-                r'选择[：:]\s*(\w+\d*)'  # 匹配 选择：wolf1 或 选择:villager1
+                r'选择\[([^\]]+)\]',  # 匹配 选择[player1] 
+                r'选择[：:]\s*(\w+\d*)',  # 匹配 选择：player1
+                r'选择\s+(\w+\d*)',   # 匹配 选择 player1
+                r'\((\w+\d*)\)',      # 匹配 (player1)
+                r'([a-zA-Z]+\d+)\s*\(',  # 匹配 player1(
             ]
             
             for pattern in patterns:
@@ -131,17 +132,9 @@ class BaseAIAgent:
                     # 提取玩家ID，去除可能的额外空格和括号
                     target = matches[-1].strip('()[]').strip()
                     # 验证是否是有效的玩家ID格式
-                    if re.match(r'^(wolf|villager)\d+$', target):
+                    if re.match(r'^player\d+$', target):
                         return target
             
-            # 如果上面的模式都没匹配到，尝试查找带括号的玩家ID
-            id_pattern = r'\((\w+\d+)\)'
-            matches = re.findall(id_pattern, response)
-            if matches:
-                target = matches[-1]
-                if re.match(r'^(wolf|villager)\d+$', target):
-                    return target
-                
             self.logger.warning(f"无法从响应中提取有效的目标ID: {response}")
             return None
         
