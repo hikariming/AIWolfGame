@@ -125,6 +125,11 @@ class GameLogger:
             "ability_usage": {
                 "correct": 0,
                 "total": 0
+            },
+            "vote_validity": {  # 新增：投票有效性指标
+                "valid_votes": 0,
+                "total_votes": 0,
+                "player_stats": {}
             }
         }
 
@@ -213,6 +218,46 @@ class GameLogger:
         self.game_record["events"].append(event)
         logging.info(f"能力使用: 玩家{player_id}使用{ability_type} {'正确' if is_correct else '错误'}")
 
+    def log_vote_validity(self, player_id: str, is_valid: bool, reason: str = None):
+        """记录投票有效性
+        
+        Args:
+            player_id: 投票者ID
+            is_valid: 是否是有效投票
+            reason: 如果无效，记录原因
+        """
+        self.metrics["vote_validity"]["total_votes"] += 1
+        if is_valid:
+            self.metrics["vote_validity"]["valid_votes"] += 1
+        
+        # 更新玩家统计
+        if player_id not in self.metrics["vote_validity"]["player_stats"]:
+            self.metrics["vote_validity"]["player_stats"][player_id] = {
+                "valid_votes": 0,
+                "total_votes": 0,
+                "invalid_reasons": {}
+            }
+        
+        player_stats = self.metrics["vote_validity"]["player_stats"][player_id]
+        player_stats["total_votes"] += 1
+        if is_valid:
+            player_stats["valid_votes"] += 1
+        elif reason:
+            player_stats["invalid_reasons"][reason] = player_stats["invalid_reasons"].get(reason, 0) + 1
+        
+        # 记录事件
+        event = {
+            "type": "vote_validity",
+            "player_id": player_id,
+            "is_valid": is_valid,
+            "reason": reason if not is_valid else None,
+            "timestamp": datetime.now().isoformat()
+        }
+        self.game_record["events"].append(event)
+        
+        if not is_valid:
+            logging.info(f"无效投票: 玩家{player_id} - 原因: {reason}")
+
     def calculate_metrics(self) -> Dict[str, float]:
         """计算最终评估指标"""
         results = {}
@@ -258,6 +303,24 @@ class GameLogger:
                 self.metrics["ability_usage"]["correct"] / 
                 self.metrics["ability_usage"]["total"]
             )
+            
+        # 投票有效率
+        if self.metrics["vote_validity"]["total_votes"] > 0:
+            results["vote_validity_rate"] = (
+                self.metrics["vote_validity"]["valid_votes"] / 
+                self.metrics["vote_validity"]["total_votes"]
+            )
+            
+            # 计算每个玩家的投票有效率
+            results["player_vote_validity"] = {}
+            for player_id, stats in self.metrics["vote_validity"]["player_stats"].items():
+                if stats["total_votes"] > 0:
+                    validity_rate = stats["valid_votes"] / stats["total_votes"]
+                    results["player_vote_validity"][player_id] = {
+                        "validity_rate": validity_rate,
+                        "total_votes": stats["total_votes"],
+                        "invalid_reasons": stats["invalid_reasons"]
+                    }
             
         return results
 
@@ -350,9 +413,32 @@ class GameLogger:
             f.write("游戏统计:\n")
             f.write(f"- 总死亡数: {self.game_record['game_stats']['total_deaths']}\n")
             f.write(f"- 技能使用次数: {self.game_record['game_stats']['ability_uses']}\n")
-            f.write(f"- 投票次数: {len(self.game_record['game_stats']['votes'])}\n\n")
+            f.write(f"- 投票次数: {len(self.game_record['game_stats']['votes'])}\n")
             
-            f.write("评估指标:\n")
+            # 添加投票有效性统计
+            if "vote_validity" in self.metrics:
+                total_votes = self.metrics["vote_validity"]["total_votes"]
+                valid_votes = self.metrics["vote_validity"]["valid_votes"]
+                if total_votes > 0:
+                    validity_rate = (valid_votes / total_votes) * 100
+                    f.write(f"\n投票统计:\n")
+                    f.write(f"- 总投票数: {total_votes}\n")
+                    f.write(f"- 有效投票数: {valid_votes}\n")
+                    f.write(f"- 投票有效率: {validity_rate:.1f}%\n")
+                    
+                    f.write("\n各玩家投票统计:\n")
+                    for player_id, stats in self.metrics["vote_validity"]["player_stats"].items():
+                        if stats["total_votes"] > 0:
+                            player_validity_rate = (stats["valid_votes"] / stats["total_votes"]) * 100
+                            f.write(f"\n玩家 {player_id}:\n")
+                            f.write(f"- 投票有效率: {player_validity_rate:.1f}%\n")
+                            f.write(f"- 总投票数: {stats['total_votes']}\n")
+                            if stats["invalid_reasons"]:
+                                f.write("- 无效原因统计:\n")
+                                for reason, count in stats["invalid_reasons"].items():
+                                    f.write(f"  * {reason}: {count}次\n")
+            
+            f.write("\n评估指标:\n")
             for metric_name, value in self.game_record["final_result"]["metrics"].items():
                 f.write(f"- {metric_name}: {value:.2%}\n")
             

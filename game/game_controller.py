@@ -18,7 +18,12 @@ class GameController:
             "phase": "night",
             "players": {},
             "alive_count": {"werewolf": 0, "villager": 0},
-            "history": []  # 游戏历史记录
+            "history": [],  # 游戏历史记录
+            "vote_stats": {  # 新增：投票统计
+                "total_votes": 0,
+                "invalid_votes": 0,
+                "player_stats": {}  # 每个玩家的投票统计
+            }
         }
         self.logger = logging.getLogger(__name__)
         self.delay = config.get("delay", 1.0)  # 动作延迟时间
@@ -55,6 +60,43 @@ class GameController:
     def _log_ability_usage(self, player_id: str, ability_type: str, is_correct: bool):
         """记录能力使用准确率"""
         self.metrics_logger.log_ability_usage(player_id, ability_type, is_correct)
+
+    def _log_invalid_vote(self, player_id: str, reason: str):
+        """记录无效投票
+        
+        Args:
+            player_id: 投票者ID
+            reason: 无效原因
+        """
+        if player_id not in self.game_state["vote_stats"]["player_stats"]:
+            self.game_state["vote_stats"]["player_stats"][player_id] = {
+                "total_votes": 0,
+                "invalid_votes": 0,
+                "invalid_reasons": []
+            }
+        
+        stats = self.game_state["vote_stats"]["player_stats"][player_id]
+        stats["total_votes"] += 1
+        stats["invalid_votes"] += 1
+        stats["invalid_reasons"].append({
+            "round": self.current_round,
+            "reason": reason
+        })
+        
+        self.game_state["vote_stats"]["total_votes"] += 1
+        self.game_state["vote_stats"]["invalid_votes"] += 1
+
+    def _log_valid_vote(self, player_id: str):
+        """记录有效投票"""
+        if player_id not in self.game_state["vote_stats"]["player_stats"]:
+            self.game_state["vote_stats"]["player_stats"][player_id] = {
+                "total_votes": 0,
+                "invalid_votes": 0,
+                "invalid_reasons": []
+            }
+        
+        self.game_state["vote_stats"]["player_stats"][player_id]["total_votes"] += 1
+        self.game_state["vote_stats"]["total_votes"] += 1
 
     def initialize_game(self) -> None:
         """初始化游戏，创建角色和AI代理"""
@@ -514,8 +556,19 @@ class GameController:
         # 显示存活玩家列表
         print("\n当前存活玩家：")
         for pid in alive_players:
-            print(f"- {self.players[pid].name}")
+            print(f"- {self.players[pid].name} (ID: {pid})")
         print("\n开始投票...")
+        
+        # 获取本轮讨论内容
+        current_round_discussions = []
+        for event in self.game_state["history"]:
+            if (event.get("round") == self.current_round and 
+                event.get("phase") == "discussion" and 
+                event.get("content")):
+                current_round_discussions.append({
+                    "player": self.players[event["player"]].name,
+                    "content": event["content"]
+                })
         
         for player_id in alive_players:
             role = self.players[player_id]
@@ -525,57 +578,114 @@ class GameController:
             if not role.is_alive:
                 continue
             
-            print(f"\n轮到 {role.name} 投票...")
-            # 获取投票目标和投票理由
-            vote_result = agent.vote(self.game_state)
-            target_id = vote_result.get("target")
-            reason = vote_result.get("reason", "没有给出具体理由")
+            # 最多尝试3次投票
+            max_attempts = 3
+            current_attempt = 0
+            valid_vote = False
             
-            # 验证投票目标的有效性
-            valid_target = False
-            if target_id:
-                # 确保目标玩家存在且存活，且不是自己
-                if (target_id in self.players and 
-                    self.players[target_id].is_alive and 
-                    target_id != player_id):
-                    valid_target = True
-            
-            if valid_target:
-                votes[target_id] = votes.get(target_id, 0) + 1
-                vote_detail = {
-                    "voter": player_id,
-                    "voter_name": role.name,
-                    "voter_role": role.role_type.value,
-                    "target": target_id,
-                    "target_name": self.players[target_id].name,
-                    "reason": reason
-                }
-                print(f"{role.name} 投票给了 {self.players[target_id].name}")
-                print(f"投票理由：{reason}")
-                vote_details.append(vote_detail)
+            while not valid_vote and current_attempt < max_attempts:
+                current_attempt += 1
                 
-                # 记录投票准确率
-                self._log_vote(player_id, target_id)
-            else:
-                # 如果投票无效，随机选择一个存活玩家（除了自己）
+                if current_attempt == 1:
+                    print(f"\n轮到 {role.name} 投票...")
+                else:
+                    print(f"\n{role.name} 第 {current_attempt} 次尝试投票...")
+                
+                # 为AI提供投票提示和上下文
+                vote_context = {
+                    "type": "vote_context",
+                    "current_round": self.current_round,
+                    "voter": {
+                        "id": player_id,
+                        "name": role.name
+                    },
+                    "alive_players": [
+                        {
+                            "id": pid,
+                            "name": self.players[pid].name
+                        }
+                        for pid in alive_players if pid != player_id
+                    ],
+                    "discussions": current_round_discussions,
+                    "retry_count": current_attempt,
+                    "message": f"请根据本轮讨论内容进行投票，注意：\n"
+                             f"1. 不能投票给自己 ({player_id})\n"
+                             f"2. 只能投票给存活的玩家\n"
+                             f"3. 必须使用正确的玩家ID格式\n"
+                             f"\n本轮讨论内容：\n" +
+                             "\n".join([f"{disc['player']}: {disc['content']}" 
+                                      for disc in current_round_discussions]) +
+                             f"\n\n当前存活玩家：\n" +
+                             "\n".join([f"- {self.players[pid].name} (ID: {pid})" 
+                                      for pid in alive_players if pid != player_id])
+                }
+                self.game_state["vote_context"] = vote_context
+                
+                # 获取投票目标和投票理由
+                vote_result = agent.vote(self.game_state)
+                target_id = vote_result.get("target")
+                reason = vote_result.get("reason", "没有给出具体理由")
+                
+                # 验证投票目标的有效性
+                if target_id:
+                    if target_id == player_id:
+                        print(f"【错误】不能投票给自己")
+                        self._log_invalid_vote(player_id, "自投")
+                    elif target_id not in self.players:
+                        print(f"【错误】目标ID {target_id} 不存在")
+                        self._log_invalid_vote(player_id, "目标ID不存在")
+                    elif not self.players[target_id].is_alive:
+                        print(f"【错误】目标玩家 {self.players[target_id].name} 已经死亡")
+                        self._log_invalid_vote(player_id, "目标已死亡")
+                    else:
+                        valid_vote = True
+                        self._log_valid_vote(player_id)
+                        votes[target_id] = votes.get(target_id, 0) + 1
+                        vote_detail = {
+                            "voter": player_id,
+                            "voter_name": role.name,
+                            "voter_role": role.role_type.value,
+                            "target": target_id,
+                            "target_name": self.players[target_id].name,
+                            "reason": reason,
+                            "attempts": current_attempt
+                        }
+                        print(f"{role.name} 投票给了 {self.players[target_id].name}")
+                        print(f"投票理由：{reason}")
+                        vote_details.append(vote_detail)
+                        
+                        # 记录投票准确率
+                        self._log_vote(player_id, target_id)
+                else:
+                    print(f"【错误】未能识别有效的投票目标")
+                    self._log_invalid_vote(player_id, "无效的投票格式")
+            
+            # 如果三次尝试后仍未有效投票，记录为随机投票
+            if not valid_vote:
+                self._log_invalid_vote(player_id, "三次尝试失败，随机投票")
                 possible_targets = [pid for pid in alive_players if pid != player_id]
                 if possible_targets:
                     target_id = random.choice(possible_targets)
                     votes[target_id] = votes.get(target_id, 0) + 1
-                    print(f"\n{role.name} 的投票无效或试图投给自己")
-                    print(f"系统随机指定投票给 {self.players[target_id].name}")
+                    print(f"\n【系统】{role.name} 三次投票均无效")
+                    print(f"【系统】随机指定投票给 {self.players[target_id].name}")
                     vote_detail = {
                         "voter": player_id,
                         "voter_name": role.name,
                         "voter_role": role.role_type.value,
                         "target": target_id,
                         "target_name": self.players[target_id].name,
-                        "reason": "投票无效，系统随机指定"
+                        "reason": "三次投票无效，系统随机指定",
+                        "attempts": current_attempt
                     }
                     vote_details.append(vote_detail)
                     self._log_vote(player_id, target_id)
                 else:
                     self.logger.warning(f"{role.name} 无法进行有效投票：没有合适的目标")
+            
+            # 清除投票上下文
+            if "vote_context" in self.game_state:
+                del self.game_state["vote_context"]
             
             time.sleep(self.delay)
 
@@ -589,6 +699,9 @@ class GameController:
             print("\n得票情况：")
             for pid, count in votes.items():
                 print(f"- {self.players[pid].name}: {count} 票")
+                # 显示投给该玩家的人
+                voters = [detail["voter_name"] for detail in vote_details if detail["target"] == pid]
+                print(f"  投票者: {', '.join(voters)}")
             
             if len(most_voted) > 1:
                 print("\n【警告】出现平票！")
@@ -609,7 +722,13 @@ class GameController:
                 "votes": vote_details,
                 "result": voted_out,
                 "is_tie": len(most_voted) > 1,
-                "vote_counts": {pid: count for pid, count in votes.items()}
+                "vote_counts": {pid: count for pid, count in votes.items()},
+                "voting_process": {
+                    "total_attempts": sum(detail["attempts"] for detail in vote_details),
+                    "invalid_votes": len([d for d in vote_details if d["attempts"] > 1]),
+                    "discussions": current_round_discussions
+                },
+                "vote_stats": self.game_state["vote_stats"]  # 添加投票统计到历史记录
             })
             
             # 处理出局，允许发表遗言
@@ -693,9 +812,40 @@ class GameController:
             if role.is_alive:
                 print(f"- {role.name} ({role.role_type.value})")
         
+        # 打印投票统计
+        print("\n=== 投票统计 ===")
+        total_votes = self.game_state["vote_stats"]["total_votes"]
+        invalid_votes = self.game_state["vote_stats"]["invalid_votes"]
+        if total_votes > 0:
+            invalid_rate = (invalid_votes / total_votes) * 100
+            print(f"\n总体投票无效率: {invalid_rate:.1f}%")
+            print(f"总投票数: {total_votes}")
+            print(f"无效投票数: {invalid_votes}")
+            
+            print("\n各玩家投票统计：")
+            for player_id, stats in self.game_state["vote_stats"]["player_stats"].items():
+                player_name = self.players[player_id].name
+                player_total = stats["total_votes"]
+                player_invalid = stats["invalid_votes"]
+                if player_total > 0:
+                    player_invalid_rate = (player_invalid / player_total) * 100
+                    print(f"\n{player_name}:")
+                    print(f"- 投票无效率: {player_invalid_rate:.1f}%")
+                    print(f"- 总投票数: {player_total}")
+                    print(f"- 无效投票数: {player_invalid}")
+                    if player_invalid > 0:
+                        print("- 无效原因统计:")
+                        reason_counts = {}
+                        for record in stats["invalid_reasons"]:
+                            reason = record["reason"]
+                            reason_counts[reason] = reason_counts.get(reason, 0) + 1
+                        for reason, count in reason_counts.items():
+                            print(f"  * {reason}: {count}次")
+        
         # 记录游戏结果
         self.game_state["history"].append({
             "round": self.current_round,
             "event": "game_over",
-            "winner": winner
+            "winner": winner,
+            "vote_stats": self.game_state["vote_stats"]  # 添加投票统计到历史记录
         }) 
