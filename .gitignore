@@ -5,3 +5,5 @@ __pycache__/
 .DS_Store
 config/ai_config.json
 logs/
+/test_analysis*
+/analysis

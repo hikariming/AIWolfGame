@@ -219,70 +219,116 @@ def update_statistics(statistics: dict, game_result: dict, model_assignments: di
     statistics["total_games"] += 1
     game_id = f"game_{statistics['total_games']}"
     
-    # 更新胜负统计
-    if game_result["winner"] == "狼人阵营":
+    # 确保winner字段存在并处理
+    winner = game_result.get("winner", "未知")
+    if winner == "好人阵营":
+        statistics["villager_wins"] += 1
+    elif winner == "狼人阵营":
         statistics["werewolf_wins"] += 1
     else:
-        statistics["villager_wins"] += 1
+        # 如果winner字段不存在或为其他值，尝试从final_result中获取
+        if "final_result" in game_result and "winner" in game_result["final_result"]:
+            winner = game_result["final_result"]["winner"]
+            if winner == "好人阵营":
+                statistics["villager_wins"] += 1
+            elif winner == "狼人阵营":
+                statistics["werewolf_wins"] += 1
     
     # 记录本局详细信息
     game_detail = {
         "game_id": game_id,
-        "round": game_result["current_round"],
-        "winner": game_result["winner"],
-        "duration": (datetime.fromisoformat(game_result["final_result"]["end_time"]) - 
-                    datetime.fromisoformat(game_result["start_time"])).total_seconds(),
+        "round": game_result.get("current_round", 0),
+        "winner": winner,
+        "duration": 0,  # 默认值
         "wolf_models": [],
         "village_models": [],
         "special_role_models": [],
         "key_events": []
     }
     
+    # 计算游戏时长
+    if "start_time" in game_result and "final_result" in game_result and "end_time" in game_result["final_result"]:
+        try:
+            start_time = datetime.fromisoformat(game_result["start_time"])
+            end_time = datetime.fromisoformat(game_result["final_result"]["end_time"])
+            game_detail["duration"] = (end_time - start_time).total_seconds()
+        except Exception as e:
+            logging.error(f"计算游戏时长出错: {str(e)}")
+    
+    # 提取指标数据，从final_result中的metrics字段获取
+    metrics_data = {}
+    if "final_result" in game_result and "metrics" in game_result["final_result"]:
+        metrics_data = game_result["final_result"]["metrics"]
+    
     # 更新模型统计
-    for player_id, player_data in game_result["final_state"]["players"].items():
-        model_type = model_assignments[player_id]
-        role = player_data["role"]
-        
-        # 更新模型在不同角色下的表现
-        if model_type not in statistics["model_performance"]:
-            statistics["model_performance"][model_type] = {
-                role_type: {"games": 0, "wins": 0} 
-                for role_type in ["werewolf", "villager", "seer", "witch", "hunter"]
-            }
-        
-        statistics["model_performance"][model_type][role]["games"] += 1
-        if (game_result["winner"] == "狼人阵营" and role == "werewolf") or \
-           (game_result["winner"] == "好人阵营" and role != "werewolf"):
-            statistics["model_performance"][model_type][role]["wins"] += 1
-        
-        # 更新游戏详情
-        if role == "werewolf":
-            game_detail["wolf_models"].append(model_type)
-        elif role in ["seer", "witch", "hunter"]:
-            game_detail["special_role_models"].append(f"{role}:{model_type}")
-        else:
-            game_detail["village_models"].append(model_type)
+    if "final_state" in game_result and "players" in game_result["final_state"]:
+        for player_id, player_data in game_result["final_state"]["players"].items():
+            model_type = model_assignments.get(player_id, "unknown")
+            role = player_data.get("role", "unknown")
+            
+            # 更新模型在不同角色下的表现
+            if model_type not in statistics["model_performance"]:
+                statistics["model_performance"][model_type] = {
+                    role_type: {"games": 0, "wins": 0} 
+                    for role_type in ["werewolf", "villager", "seer", "witch", "hunter"]
+                }
+            
+            if role in statistics["model_performance"][model_type]:
+                statistics["model_performance"][model_type][role]["games"] += 1
+                if (winner == "狼人阵营" and role == "werewolf") or \
+                   (winner == "好人阵营" and role != "werewolf"):
+                    statistics["model_performance"][model_type][role]["wins"] += 1
+            
+            # 更新model_stats数据结构
+            if model_type not in statistics["model_stats"]:
+                statistics["model_stats"][model_type] = {
+                    "games": 0,
+                    "wins": 0,
+                    "metrics": {metric: [] for metric in statistics["metrics"]}
+                }
+            
+            statistics["model_stats"][model_type]["games"] += 1
+            if (winner == "狼人阵营" and role == "werewolf") or \
+               (winner == "好人阵营" and role != "werewolf"):
+                statistics["model_stats"][model_type]["wins"] += 1
+                
+            # 如果存在指标数据，更新到对应模型的指标中
+            for metric_name, value in metrics_data.items():
+                if metric_name in statistics["metrics"]:
+                    if model_type in statistics["model_stats"]:
+                        if metric_name in statistics["model_stats"][model_type]["metrics"]:
+                            statistics["model_stats"][model_type]["metrics"][metric_name].append(value)
+            
+            # 更新游戏详情
+            if role == "werewolf":
+                game_detail["wolf_models"].append(model_type)
+            elif role in ["seer", "witch", "hunter"]:
+                game_detail["special_role_models"].append(f"{role}:{model_type}")
+            else:
+                game_detail["village_models"].append(model_type)
     
     # 记录关键事件
-    for event in game_result["history"]:
-        if event["event"] in ["death", "wolf_identify", "seer_check", "witch_action"]:
-            game_detail["key_events"].append(f"{event['round']}_{event['event']}")
+    if "history" in game_result:
+        for event in game_result["history"]:
+            if isinstance(event, dict) and "event" in event and event["event"] in ["death", "wolf_identify", "seer_check", "witch_action"]:
+                game_detail["key_events"].append(f"{event.get('round', 0)}_{event['event']}")
     
     statistics["game_details"].append(game_detail)
     
     # 更新角色统计
-    for player_id, player_data in game_result["final_state"]["players"].items():
-        role = player_data["role"]
-        statistics["role_stats"][role]["total"] += 1
-        if (game_result["winner"] == "狼人阵营" and role == "werewolf") or \
-           (game_result["winner"] == "好人阵营" and role != "werewolf"):
-            statistics["role_stats"][role]["wins"] += 1
+    if "final_state" in game_result and "players" in game_result["final_state"]:
+        for player_id, player_data in game_result["final_state"]["players"].items():
+            role = player_data.get("role", "unknown")
+            if role in statistics["role_stats"]:
+                statistics["role_stats"][role]["total"] += 1
+                if (winner == "狼人阵营" and role == "werewolf") or \
+                   (winner == "好人阵营" and role != "werewolf"):
+                    statistics["role_stats"][role]["wins"] += 1
     
     # 更新评估指标
-    if "metrics" in game_result:
-        for metric_name, value in game_result["metrics"].items():
-            if metric_name in statistics["metrics"]:
-                statistics["metrics"][metric_name].append(value)
+    for metric_name, value in metrics_data.items():
+        if metric_name in statistics["metrics"]:
+            statistics["metrics"][metric_name].append(value)
     
     # 记录本轮角色分配
     statistics["role_assignments"].append({
@@ -294,20 +340,34 @@ def print_statistics(statistics: dict):
     """打印统计结果"""
     print("\n=== 游戏统计 ===")
     print(f"总场次: {statistics['total_games']}")
-    print(f"狼人胜率: {statistics['werewolf_wins']/statistics['total_games']:.2%}")
-    print(f"好人胜率: {statistics['villager_wins']/statistics['total_games']:.2%}")
+    
+    # 添加除零保护
+    if statistics['total_games'] > 0:
+        print(f"狼人胜率: {statistics['werewolf_wins']/statistics['total_games']:.2%}")
+        print(f"好人胜率: {statistics['villager_wins']/statistics['total_games']:.2%}")
+    else:
+        print("狼人胜率: 0.00%")
+        print("好人胜率: 0.00%")
     
     print("\n各角色胜率:")
+    has_role_stats = False
     for role, stats in statistics["role_stats"].items():
         if stats["total"] > 0:
+            has_role_stats = True
             win_rate = stats["wins"] / stats["total"]
             print(f"{role}: {win_rate:.2%} ({stats['wins']}/{stats['total']})")
+    if not has_role_stats:
+        print("暂无角色胜率数据")
     
     print("\n各模型表现:")
+    has_model_stats = False
     for model, stats in statistics["model_stats"].items():
         if stats["games"] > 0:
+            has_model_stats = True
             win_rate = stats["wins"] / stats["games"]
             print(f"{model}: 胜率 {win_rate:.2%} ({stats['wins']}/{stats['games']})")
+    if not has_model_stats:
+        print("暂无模型表现数据")
     
     print("\n评估指标平均值:")
     for metric_name, values in statistics["metrics"].items():

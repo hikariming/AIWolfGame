@@ -5,61 +5,110 @@ from .roles import BaseRole, Werewolf, Villager, RoleType, Seer, Witch, Hunter
 from .ai_players import create_ai_agent, BaseAIAgent
 import random
 import re
-from utils.logger import GameLogger
+from utils.logger import GameLogger, setup_logger
+from datetime import datetime
 
 class GameController:
     def __init__(self, config: Dict):
+        """初始化游戏控制器
+        
+        Args:
+            config: 游戏配置字典
+            {
+                'roles': {角色配置},
+                'game_settings': {游戏设置},
+                'ai_players': {AI玩家配置}
+                'delay': 延迟时间
+            }
+        """
         self.config = config
-        self.players: Dict[str, BaseRole] = {}
-        self.ai_agents: Dict[str, BaseAIAgent] = {}
+        self.players = {}  # 玩家ID -> Role对象
+        self.ai_agents = {}  # 玩家ID -> AIAgent对象
         self.current_round = 1
+        self.delay = config.get("delay", 1.0)  # 获取延迟设置，默认1秒
+        
+        # 初始化游戏状态
         self.game_state = {
             "current_round": self.current_round,
-            "phase": "night",
-            "players": {},
-            "alive_count": {"werewolf": 0, "villager": 0},
+            "phase": "init",
+            "players": {},  # 玩家状态信息
             "history": [],  # 游戏历史记录
-            "vote_stats": {  # 新增：投票统计
+            "alive_count": {"werewolf": 0, "villager": 0},  # 存活人数统计
+            "vote_stats": {  # 投票统计
                 "total_votes": 0,
                 "invalid_votes": 0,
-                "player_stats": {}  # 每个玩家的投票统计
-            }
+                "player_stats": {}
+            },
+            "start_time": datetime.now().isoformat()  # 添加游戏开始时间
         }
-        self.logger = logging.getLogger(__name__)
-        self.delay = config.get("delay", 1.0)  # 动作延迟时间
         
-        # 初始化评估指标记录器
-        self.metrics_logger = GameLogger(debug=config.get("debug", False))
+        # 初始化游戏日志器
+        debug_mode = config.get("debug", False)
+        self.logger = setup_logger(debug=debug_mode)
 
     def _log_role_recognition(self, player_id: str, target_id: str, guess_is_wolf: bool):
         """记录角色识别准确率"""
         actual_is_wolf = self.players[target_id].is_wolf()
         is_correct = guess_is_wolf == actual_is_wolf
-        self.metrics_logger.log_role_recognition(player_id, is_correct)
+        if hasattr(self.logger, 'log_role_recognition'):
+            self.logger.log_role_recognition(player_id, is_correct)
 
     def _log_deception_attempt(self, wolf_id: str, is_successful: bool):
         """记录狼人欺骗成功率"""
-        self.metrics_logger.log_deception_attempt(wolf_id, is_successful)
+        if hasattr(self.logger, 'log_deception_attempt'):
+            self.logger.log_deception_attempt(wolf_id, is_successful)
 
     def _log_vote(self, voter_id: str, target_id: str):
-        """记录投票准确率"""
-        voter_is_wolf = self.players[voter_id].is_wolf()
-        target_is_wolf = self.players[target_id].is_wolf()
-        # 好人投狼人或狼人投好人都算正确
-        is_correct = voter_is_wolf != target_is_wolf
-        self.metrics_logger.log_vote(voter_id, target_id, is_correct)
+        """记录投票情况
+        
+        Args:
+            voter_id: 投票者ID
+            target_id: 目标ID
+        """
+        # 获取投票者和目标的角色
+        voter_role = self.players[voter_id]
+        target_role = self.players[target_id]
+        
+        # 计算投票正确性 - 如果好人投票给狼人或狼人投票给好人，视为正确投票
+        is_correct = False
+        if voter_role.is_wolf() and not target_role.is_wolf():
+            # 狼人投给了好人 - 策略性正确(保护狼队友)
+            is_correct = True
+        elif not voter_role.is_wolf() and target_role.is_wolf():
+            # 好人投给了狼人 - 判断正确
+            is_correct = True
+            
+        # 记录投票准确率指标
+        if hasattr(self.logger, 'log_vote'):
+            self.logger.log_vote(voter_id, target_id, is_correct)
+        
+        # 同时记录到游戏状态中
+        if "votes" not in self.game_state:
+            self.game_state["votes"] = []
+            
+        self.game_state["votes"].append({
+            "round": self.current_round,
+            "voter": voter_id,
+            "target": target_id,
+            "is_correct": is_correct,
+            "voter_role": voter_role.role_type.value,
+            "target_role": target_role.role_type.value
+        })
 
     def _log_communication(self, player_id: str, message_id: str, influenced_others: bool):
         """记录沟通效果"""
-        self.metrics_logger.log_communication(player_id, message_id, influenced_others)
+        if hasattr(self.logger, 'log_communication'):
+            self.logger.log_communication(player_id, message_id, influenced_others)
 
     def _log_survival(self, player_id: str):
         """记录生存率"""
-        self.metrics_logger.log_survival(player_id, self.current_round, self.config.get("total_rounds", 100))
+        if hasattr(self.logger, 'log_survival'):
+            self.logger.log_survival(player_id, self.current_round, self.config.get("total_rounds", 100))
 
     def _log_ability_usage(self, player_id: str, ability_type: str, is_correct: bool):
         """记录能力使用准确率"""
-        self.metrics_logger.log_ability_usage(player_id, ability_type, is_correct)
+        if hasattr(self.logger, 'log_ability_usage'):
+            self.logger.log_ability_usage(player_id, ability_type, is_correct)
 
     def _log_invalid_vote(self, player_id: str, reason: str):
         """记录无效投票
@@ -527,7 +576,8 @@ class GameController:
             time.sleep(self.delay)
         
         # 记录本轮所有讨论
-        self.metrics_logger.log_round_discussion(self.current_round, round_speeches)
+        if hasattr(self.logger, 'log_round_discussion'):
+            self.logger.log_round_discussion(self.current_round, round_speeches)
 
     def _evaluate_speech_influence(self, speech: str, speaker_id: str) -> bool:
         """评估发言的影响力
@@ -742,7 +792,8 @@ class GameController:
                 })
             
             # 记录本轮投票结果
-            self.metrics_logger.log_round_vote(self.current_round, vote_results)
+            if hasattr(self.logger, 'log_round_vote'):
+                self.logger.log_round_vote(self.current_round, vote_results)
             
             print(f"\n{self.players[voted_out].name} 被投票出局")
             
@@ -872,6 +923,20 @@ class GameController:
                             reason_counts[reason] = reason_counts.get(reason, 0) + 1
                         for reason, count in reason_counts.items():
                             print(f"  * {reason}: {count}次")
+        
+        # 收集评估指标数据
+        metrics = {}
+        if hasattr(self, 'logger') and hasattr(self.logger, 'calculate_metrics'):
+            metrics = self.logger.calculate_metrics()
+        
+        # 设置游戏结果数据
+        self.game_state["winner"] = winner
+        self.game_state["final_result"] = {
+            "end_time": datetime.now().isoformat(),
+            "winner": winner,
+            "vote_stats": self.game_state["vote_stats"],
+            "metrics": metrics
+        }
         
         # 记录游戏结果
         self.game_state["history"].append({
