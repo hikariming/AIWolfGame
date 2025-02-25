@@ -22,6 +22,7 @@
 - 丰富的角色技能：预言家查验、女巫救人/毒人、猎人开枪
 - 真实的对话系统：AI角色会进行符合身份的对话和行为
 - 完整的游戏记录：保存所有对话和行动记录
+- AI轮流扮演角色，可以统计每个AI扮演不同角色胜率
 
 ## 安装使用
 
@@ -86,8 +87,12 @@ pip install -r requirements.txt
 
 5. 运行游戏：
 ```bash
-python main.py
+python main.py --rounds 1 --delay 0.5 --export-path ./test_analysis1
 ```
+
+rounds: 游戏轮数
+delay: 每轮之间的延迟时间
+export-path: 导出分析结果的文件路径
 
 ## 运行效果展示
 
