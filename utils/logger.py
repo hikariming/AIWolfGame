@@ -35,6 +35,8 @@ import os
 from datetime import datetime
 from typing import Dict, Any, List
 import json
+import csv
+import glob
 
 class GameLogger:
     def __init__(self, debug: bool = False):
@@ -402,6 +404,214 @@ class GameLogger:
         }
         with open(stats_file, 'w', encoding='utf-8') as f:
             json.dump(stats, f, ensure_ascii=False, indent=2)
+            
+        # 记录单局游戏结果
+        self.log_game_result()
+        
+        # 记录多轮游戏统计
+        self.log_multi_game_stats()
+
+    def log_game_result(self):
+        """记录单局游戏结果到CSV文件"""
+        # 确保目录存在
+        os.makedirs('game_results', exist_ok=True)
+        
+        # 获取游戏结果数据
+        final_result = self.game_record.get("final_result", {})
+        winner = final_result.get("winner", "未知")
+        metrics = final_result.get("metrics", {})
+        
+        # 获取玩家数据
+        players_data = []
+        if "final_state" in final_result and "players" in final_result["final_state"]:
+            for player_id, player_info in final_result["final_state"]["players"].items():
+                # 获取玩家的AI模型类型（需要从外部传入）
+                ai_model = player_info.get("ai_model", "未知")
+                role = player_info.get("role", "未知")
+                is_alive = player_info.get("is_alive", False)
+                
+                # 计算该玩家是否获胜
+                is_winner = False
+                if (winner == "狼人阵营" and role == "werewolf") or \
+                   (winner == "好人阵营" and role != "werewolf"):
+                    is_winner = True
+                
+                # 收集玩家数据
+                player_data = {
+                    "player_id": player_id,
+                    "name": player_info.get("name", player_id),
+                    "role": role,
+                    "ai_model": ai_model,
+                    "is_alive": is_alive,
+                    "is_winner": is_winner
+                }
+                players_data.append(player_data)
+        
+        # 创建CSV文件名
+        csv_file = f'game_results/game_result_{self.timestamp}.csv'
+        
+        # 写入CSV文件
+        with open(csv_file, 'w', newline='', encoding='utf-8') as f:
+            # 定义CSV列
+            fieldnames = [
+                "game_id", "timestamp", "winner", "total_rounds", 
+                "player_id", "player_name", "role", "ai_model", "is_alive", "is_winner",
+                "role_recognition_accuracy", "deception_success_rate", "voting_accuracy",
+                "communication_effectiveness", "survival_rate", "ability_usage_accuracy"
+            ]
+            
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            
+            # 为每个玩家写入一行
+            game_id = f"game_{self.timestamp}"
+            for player in players_data:
+                row = {
+                    "game_id": game_id,
+                    "timestamp": self.timestamp,
+                    "winner": winner,
+                    "total_rounds": self.game_record["game_stats"]["total_rounds"],
+                    "player_id": player["player_id"],
+                    "player_name": player["name"],
+                    "role": player["role"],
+                    "ai_model": player["ai_model"],
+                    "is_alive": "是" if player["is_alive"] else "否",
+                    "is_winner": "是" if player["is_winner"] else "否"
+                }
+                
+                # 添加指标数据
+                for metric_name, value in metrics.items():
+                    if metric_name in fieldnames:
+                        row[metric_name] = value
+                
+                writer.writerow(row)
+        
+        logging.info(f"单局游戏结果已保存到 {csv_file}")
+    
+    def log_multi_game_stats(self):
+        """记录多轮游戏统计到CSV文件"""
+        # 确保目录存在
+        os.makedirs('game_stats', exist_ok=True)
+        
+        # 收集所有单局游戏结果文件
+        game_result_files = glob.glob('game_results/game_result_*.csv')
+        
+        if not game_result_files:
+            logging.warning("没有找到单局游戏结果文件，无法生成多轮统计")
+            return
+        
+        # 初始化模型统计数据
+        model_stats = {}
+        
+        # 读取所有单局游戏结果
+        for result_file in game_result_files:
+            with open(result_file, 'r', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    ai_model = row.get("ai_model", "未知")
+                    role = row.get("role", "未知")
+                    is_winner = row.get("is_winner", "否") == "是"
+                    is_alive = row.get("is_alive", "否") == "是"
+                    
+                    # 初始化模型数据
+                    if ai_model not in model_stats:
+                        model_stats[ai_model] = {
+                            "total_games": 0,
+                            "wins": 0,
+                            "werewolf_games": 0,
+                            "werewolf_wins": 0,
+                            "villager_games": 0,
+                            "villager_wins": 0,
+                            "survival_count": 0,
+                            "role_recognition_correct": 0,
+                            "role_recognition_total": 0,
+                            "metrics": {
+                                "role_recognition_accuracy": [],
+                                "deception_success_rate": [],
+                                "voting_accuracy": [],
+                                "communication_effectiveness": [],
+                                "survival_rate": [],
+                                "ability_usage_accuracy": []
+                            }
+                        }
+                    
+                    # 更新统计
+                    model_stats[ai_model]["total_games"] += 1
+                    if is_winner:
+                        model_stats[ai_model]["wins"] += 1
+                    
+                    if role == "werewolf":
+                        model_stats[ai_model]["werewolf_games"] += 1
+                        if is_winner:
+                            model_stats[ai_model]["werewolf_wins"] += 1
+                    else:
+                        model_stats[ai_model]["villager_games"] += 1
+                        if is_winner:
+                            model_stats[ai_model]["villager_wins"] += 1
+                    
+                    if is_alive:
+                        model_stats[ai_model]["survival_count"] += 1
+                    
+                    # 收集指标数据
+                    for metric_name in model_stats[ai_model]["metrics"]:
+                        if metric_name in row and row[metric_name]:
+                            try:
+                                value = float(row[metric_name])
+                                model_stats[ai_model]["metrics"][metric_name].append(value)
+                            except (ValueError, TypeError):
+                                pass
+        
+        # 创建CSV文件名
+        csv_file = f'game_stats/multi_game_stats_{self.timestamp}.csv'
+        
+        # 写入CSV文件
+        with open(csv_file, 'w', newline='', encoding='utf-8') as f:
+            fieldnames = [
+                "AI模型", "总场次", "总胜场", "总胜率", 
+                "狼人场次", "狼人胜场", "狼人胜率",
+                "好人场次", "好人胜场", "好人胜率",
+                "存活率", "角色识别准确率", "欺骗成功率", 
+                "投票准确率", "沟通效果", "能力使用准确率"
+            ]
+            
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            
+            # 为每个模型写入一行
+            for model, stats in model_stats.items():
+                # 计算胜率
+                win_rate = stats["wins"] / stats["total_games"] if stats["total_games"] > 0 else 0
+                werewolf_win_rate = stats["werewolf_wins"] / stats["werewolf_games"] if stats["werewolf_games"] > 0 else 0
+                villager_win_rate = stats["villager_wins"] / stats["villager_games"] if stats["villager_games"] > 0 else 0
+                survival_rate = stats["survival_count"] / stats["total_games"] if stats["total_games"] > 0 else 0
+                
+                # 计算平均指标
+                avg_metrics = {}
+                for metric_name, values in stats["metrics"].items():
+                    avg_metrics[metric_name] = sum(values) / len(values) if values else 0
+                
+                row = {
+                    "AI模型": model,
+                    "总场次": stats["total_games"],
+                    "总胜场": stats["wins"],
+                    "总胜率": win_rate,
+                    "狼人场次": stats["werewolf_games"],
+                    "狼人胜场": stats["werewolf_wins"],
+                    "狼人胜率": werewolf_win_rate,
+                    "好人场次": stats["villager_games"],
+                    "好人胜场": stats["villager_wins"],
+                    "好人胜率": villager_win_rate,
+                    "存活率": survival_rate,
+                    "角色识别准确率": avg_metrics.get("role_recognition_accuracy", 0),
+                    "欺骗成功率": avg_metrics.get("deception_success_rate", 0),
+                    "投票准确率": avg_metrics.get("voting_accuracy", 0),
+                    "沟通效果": avg_metrics.get("communication_effectiveness", 0),
+                    "能力使用准确率": avg_metrics.get("ability_usage_accuracy", 0)
+                }
+                
+                writer.writerow(row)
+        
+        logging.info(f"多轮游戏统计已保存到 {csv_file}")
 
     def _generate_analysis_report(self):
         """生成分析报告"""

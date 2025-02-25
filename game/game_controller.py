@@ -173,7 +173,8 @@ class GameController:
                 self.game_state["players"][player_id] = {
                     "name": info["name"],
                     "is_alive": True,
-                    "role": role_type
+                    "role": role_type,
+                    "ai_model": info.get("ai_type", "unknown")  # 记录AI模型类型
                 }
                 
                 # 获取AI配置
@@ -935,7 +936,12 @@ class GameController:
             "end_time": datetime.now().isoformat(),
             "winner": winner,
             "vote_stats": self.game_state["vote_stats"],
-            "metrics": metrics
+            "metrics": metrics,
+            "final_state": {
+                "players": self.game_state["players"],
+                "alive_count": self.game_state["alive_count"],
+                "current_round": self.current_round
+            }
         }
         
         # 记录游戏结果
@@ -945,3 +951,7 @@ class GameController:
             "winner": winner,
             "vote_stats": self.game_state["vote_stats"]  # 添加投票统计到历史记录
         }) 
+        
+        # 调用logger记录游戏结束和指标数据
+        if hasattr(self, 'logger') and hasattr(self.logger, 'log_game_over'):
+            self.logger.log_game_over(winner, self.game_state) 
