@@ -63,6 +63,37 @@ def validate_game_config(config: Dict[str, Any]) -> bool:
         werewolf_count = len(roles.get("werewolf", []))
         if werewolf_count == 0 or werewolf_count >= total_players / 2:
             return False
+        
+        # 检查多轮分配配置（如果存在）
+        if "multi_round_assignments" in config:
+            assignments = config["multi_round_assignments"]
+            
+            # 检查是否为列表
+            if not isinstance(assignments, list):
+                logging.error("multi_round_assignments 必须是一个列表")
+                return False
+                
+            # 获取所有角色ID
+            all_role_ids = []
+            for role_type, role_dict in roles.items():
+                all_role_ids.extend(role_dict.keys())
+                
+            # 检查每个轮次的配置
+            for round_config in assignments:
+                # 检查必要的字段
+                if not all(key in round_config for key in ["round", "assignments"]):
+                    logging.error(f"轮次配置缺少必要字段: {round_config}")
+                    return False
+                    
+                # 检查轮次是否为正整数
+                if not isinstance(round_config["round"], int) or round_config["round"] <= 0:
+                    logging.error(f"轮次必须是正整数: {round_config['round']}")
+                    return False
+                    
+                # 检查分配是否包含所有角色
+                if set(round_config["assignments"].keys()) != set(all_role_ids):
+                    logging.error(f"轮次 {round_config['round']} 的角色分配不完整")
+                    return False
             
         return True
     except Exception as e:

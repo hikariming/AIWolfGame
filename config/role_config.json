@@ -48,5 +48,46 @@
         "personality": "多疑"
       }
     }
-  }
+  },
+  "multi_round_assignments": [
+    {
+      "round": 1,
+      "assignments": {
+        "player1": "claude35",
+        "player2": "deepseekv3",
+        "player3": "Qwen25",
+        "player4": "qwen-max-latest",
+        "player5": "Doubao-pro-128k",
+        "player6": "o3-mini",
+        "player7": "gemini-flash",
+        "player8": "gemini-pro"
+      }
+    },
+    {
+      "round": 2,
+      "assignments": {
+        "player1": "deepseekv3",
+        "player2": "Qwen25",
+        "player3": "qwen-max-latest",
+        "player4": "Doubao-pro-128k",
+        "player5": "o3-mini",
+        "player6": "gemini-flash",
+        "player7": "gemini-pro",
+        "player8": "claude35"
+      }
+    },
+    {
+      "round": 3,
+      "assignments": {
+        "player1": "Qwen25",
+        "player2": "qwen-max-latest",
+        "player3": "Doubao-pro-128k",
+        "player4": "o3-mini",
+        "player5": "gemini-flash",
+        "player6": "gemini-pro",
+        "player7": "claude35",
+        "player8": "deepseekv3"
+      }
+    }
+  ]
 } 

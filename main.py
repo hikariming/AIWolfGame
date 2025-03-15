@@ -145,6 +145,52 @@ def assign_models_to_roles(models: List[str], roles: Dict, round_num: int, inter
     
     return assignments
 
+def get_model_assignments_from_config(config: Dict, round_num: int) -> Dict:
+    """从配置文件中获取指定轮次的角色分配
+    
+    Args:
+        config: 游戏配置
+        round_num: 当前轮次（从0开始）
+        
+    Returns:
+        Dict: 角色到模型的映射
+    """
+    # 检查配置文件中是否有多轮分配配置
+    if "multi_round_assignments" not in config:
+        # 如果没有多轮分配配置，使用原来的随机分配逻辑
+        return assign_models_to_roles(
+            config.get("models_to_evaluate", []),
+            config["roles"],
+            round_num,
+            config["game_settings"]["role_rotation_interval"]
+        )
+    
+    # 获取多轮分配配置
+    assignments_config = config["multi_round_assignments"]
+    
+    # 计算实际轮次（从1开始）
+    actual_round = round_num + 1
+    
+    # 查找对应轮次的分配配置
+    for round_config in assignments_config:
+        if round_config["round"] == actual_round:
+            return round_config["assignments"]
+    
+    # 如果找不到对应轮次的配置，使用最后一个配置的轮次模数
+    if assignments_config:
+        max_configured_round = max(cfg["round"] for cfg in assignments_config)
+        for round_config in assignments_config:
+            if round_config["round"] == (actual_round - 1) % max_configured_round + 1:
+                return round_config["assignments"]
+    
+    # 如果仍然找不到，使用原来的随机分配逻辑
+    return assign_models_to_roles(
+        config.get("models_to_evaluate", []),
+        config["roles"],
+        round_num,
+        config["game_settings"]["role_rotation_interval"]
+    )
+
 def export_analysis(statistics: dict, config: dict, export_path: str):
     """导出分析数据
     
@@ -243,7 +289,8 @@ def update_statistics(statistics: dict, game_result: dict, model_assignments: di
         "wolf_models": [],
         "village_models": [],
         "special_role_models": [],
-        "key_events": []
+        "key_events": [],
+        "model_assignments": model_assignments  # 记录本轮的角色分配
     }
     
     # 计算游戏时长
@@ -330,10 +377,11 @@ def update_statistics(statistics: dict, game_result: dict, model_assignments: di
         if metric_name in statistics["metrics"]:
             statistics["metrics"][metric_name].append(value)
     
-    # 记录本轮角色分配
+    # 记录角色分配情况
     statistics["role_assignments"].append({
         "game_id": game_id,
-        "assignments": model_assignments.copy()
+        "round_num": statistics["total_games"],
+        "assignments": model_assignments
     })
 
 def print_statistics(statistics: dict):
@@ -415,12 +463,7 @@ def main():
         for round_num in range(start_round, args.rounds):
             try:
                 # 分配模型到角色
-                model_assignments = assign_models_to_roles(
-                    models_to_evaluate,
-                    role_config["roles"],
-                    round_num,
-                    role_rotation_interval
-                )
+                model_assignments = get_model_assignments_from_config(role_config, round_num)
                 
                 # 更新角色配置中的AI类型
                 game_roles = copy.deepcopy(role_config["roles"])
