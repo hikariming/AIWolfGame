@@ -79,9 +79,9 @@
     {
       "round": 3,
       "assignments": {
-        "player1": "Qwen25",
+        "player1": "Doubao-pro-128k",
         "player2": "qwen-max-latest",
-        "player3": "Doubao-pro-128k",
+        "player3": "Qwen25",
         "player4": "o3-mini",
         "player5": "gemini-flash",
         "player6": "gemini-pro",
