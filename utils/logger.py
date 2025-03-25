@@ -784,6 +784,23 @@ class GameLogger:
         # 添加数据
         round_record[record_type] = data
 
+    # 添加标准日志方法
+    def info(self, message):
+        """将info级别的消息传递给标准logging模块"""
+        logging.info(message)
+        
+    def error(self, message):
+        """将error级别的消息传递给标准logging模块"""
+        logging.error(message)
+        
+    def warning(self, message):
+        """将warning级别的消息传递给标准logging模块"""
+        logging.warning(message)
+        
+    def debug(self, message):
+        """将debug级别的消息传递给标准logging模块"""
+        logging.debug(message)
+
 def setup_logger(debug: bool = False) -> GameLogger:
     """创建并返回游戏日志记录器"""
     return GameLogger(debug) 

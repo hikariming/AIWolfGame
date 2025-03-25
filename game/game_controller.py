@@ -7,6 +7,8 @@ import random
 import re
 from utils.logger import GameLogger, setup_logger
 from datetime import datetime
+import json
+import os
 
 class GameController:
     def __init__(self, config: Dict):
@@ -42,9 +44,22 @@ class GameController:
             "start_time": datetime.now().isoformat()  # 添加游戏开始时间
         }
         
+        # 添加信任网络数据收集
+        self.trust_network_data = {
+            "game_id": datetime.now().strftime("%Y%m%d_%H%M%S"),
+            "rounds": [],
+            "player_roles": {},
+            "final_result": None
+        }
+        
         # 初始化游戏日志器
         debug_mode = config.get("debug", False)
         self.logger = setup_logger(debug=debug_mode)
+        
+        # 创建数据输出目录
+        self.data_dir = config.get("data_dir", "game_data")
+        if not os.path.exists(self.data_dir):
+            os.makedirs(self.data_dir)
 
     def _log_role_recognition(self, player_id: str, target_id: str, guess_is_wolf: bool):
         """记录角色识别准确率"""
@@ -197,26 +212,316 @@ class GameController:
                 agent.team_members = [p for p in wolf_players if p != wolf_id]
 
     def run_game(self) -> None:
-        """运行游戏主循环"""
-        self.initialize_game()
+        """运行游戏的主要逻辑"""
+        print("\n=== 游戏开始 ===")
+        print("初始化游戏设置...")
         
-        while not self.check_game_over():
-            self.game_state["current_round"] = self.current_round
-            print(f"\n=== 第 {self.current_round} 回合 ===")
+        try:
+            # 初始化游戏
+            self.initialize_game()
             
-            # 夜晚阶段
-            self.night_phase()
-            if self.check_game_over():
-                break
-                
-            # 白天阶段
-            self.day_phase()
+            # 记录玩家角色信息
+            for player_id, role in self.players.items():
+                self.trust_network_data["player_roles"][player_id] = {
+                    "name": role.name,
+                    "role_type": role.role_type.value
+                }
             
-            self.current_round += 1
-            time.sleep(self.delay)  # 回合间延迟
+            # 游戏循环
+            game_over = False
+            
+            while not game_over:
+                try:
+                    print(f"\n\n=== 第 {self.current_round} 回合 ===")
+                    
+                    # 更新游戏状态
+                    self.game_state["current_round"] = self.current_round
+                    
+                    # 夜晚阶段
+                    print("\n== 夜晚阶段 ==")
+                    self.night_phase()
+                    
+                    # 检查游戏是否结束
+                    if self.check_game_over():
+                        self.announce_winner()
+                        game_over = True
+                        break
+                    
+                    # 白天阶段
+                    print("\n== 白天阶段 ==")
+                    self.day_phase()
+                    
+                    # 收集信任评分数据
+                    try:
+                        self.collect_trust_ratings()
+                    except Exception as e:
+                        print(f"收集信任评分时出错: {str(e)}")
+                        logging.error(f"收集信任评分时出错: {str(e)}")
+                    
+                    # 检查游戏是否结束
+                    if self.check_game_over():
+                        self.announce_winner()
+                        game_over = True
+                        break
+                    
+                    # 投票阶段
+                    print("\n== 投票阶段 ==")
+                    self.voting_phase()
+                    
+                    # 检查游戏是否结束
+                    if self.check_game_over():
+                        self.announce_winner()
+                        game_over = True
+                        break
+                    
+                    # 保存当前回合数据
+                    try:
+                        self.save_round_data()
+                    except Exception as e:
+                        print(f"保存回合数据时出错: {str(e)}")
+                        logging.error(f"保存回合数据时出错: {str(e)}")
+                    
+                    # 准备下一轮
+                    self.current_round += 1
+                    self.game_state["current_round"] = self.current_round
+                    
+                    # 清理本轮讨论记录
+                    for agent in self.ai_agents.values():
+                        agent.memory.clear_current_round()
+                except Exception as e:
+                    print(f"第 {self.current_round} 回合运行出错: {str(e)}")
+                    logging.error(f"第 {self.current_round} 回合运行出错: {str(e)}")
+                    # 如果出现错误，继续下一回合
+                    self.current_round += 1
+                    self.game_state["current_round"] = self.current_round
+            
+            # 确保游戏结束时有一个最终结果
+            if "winner" not in self.game_state:
+                self.game_state["winner"] = "unknown"
+                print("游戏异常结束，没有确定获胜方")
+            
+            # 尝试导出游戏数据
+            try:
+                print("\n尝试导出游戏数据...")
+                self.export_game_data()
+            except Exception as e:
+                print(f"导出游戏数据时出错: {str(e)}")
+                logging.error(f"导出游戏数据时出错: {str(e)}")
+                # 尝试紧急保存到备用文件
+                emergency_filename = f"{self.data_dir}/emergency_game_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+                try:
+                    print(f"尝试紧急保存数据到 {emergency_filename}")
+                    with open(emergency_filename, 'w', encoding='utf-8') as f:
+                        json.dump(self.trust_network_data, f, ensure_ascii=False, indent=2)
+                    print(f"\n游戏数据已紧急保存到: {emergency_filename}")
+                except Exception as backup_error:
+                    print(f"紧急保存数据也失败了: {str(backup_error)}")
+                    logging.error(f"紧急保存数据也失败了: {str(backup_error)}")
+        except Exception as e:
+            print(f"游戏运行出错: {str(e)}")
+            logging.error(f"游戏运行出错: {str(e)}")
+            # 尝试导出当前状态的数据
+            try:
+                emergency_filename = f"{self.data_dir}/crash_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+                print(f"尝试保存崩溃数据到 {emergency_filename}")
+                with open(emergency_filename, 'w', encoding='utf-8') as f:
+                    json.dump(self.trust_network_data, f, ensure_ascii=False, indent=2)
+                print(f"\n崩溃数据已保存到: {emergency_filename}")
+            except Exception as crash_save_error:
+                print(f"保存崩溃数据失败: {str(crash_save_error)}")
+                logging.error(f"保存崩溃数据失败: {str(crash_save_error)}")
+    
+    def collect_trust_ratings(self) -> None:
+        """收集所有存活玩家对其他玩家的信任评分"""
+        print("\n=== 收集信任评分 ===")
         
-        self.announce_winner()
-
+        try:
+            # 检查是否已收集过该回合的信任评分
+            for existing_data in self.trust_network_data["rounds"]:
+                if (existing_data.get("round") == self.current_round and 
+                    existing_data.get("type") == "trust_ratings"):
+                    print(f"第 {self.current_round} 回合的信任评分已存在，跳过收集")
+                    return
+            
+            trust_data = {
+                "type": "trust_ratings",  # 添加类型标记
+                "round": self.current_round,
+                "timestamp": datetime.now().isoformat(),
+                "ratings": {}
+            }
+            
+            # 只有存活的玩家才能评分
+            alive_players = [pid for pid, role in self.players.items() if role.is_alive]
+            print(f"存活玩家: {', '.join(alive_players)}")
+            
+            if not alive_players:
+                print("没有存活的玩家来进行信任评分")
+                return
+            
+            collection_success = False  # 标记是否至少收集到一位玩家的评分
+            
+            for player_id in alive_players:
+                try:
+                    print(f"\n收集 {self.players[player_id].name} 的信任评分...")
+                    agent = self.ai_agents[player_id]
+                    
+                    # 获取AI对其他玩家的信任评分
+                    print(f"开始向{player_id}请求信任评分...")
+                    ratings = agent.evaluate_trust(self.game_state)
+                    print(f"获取到{player_id}的评分数据: {ratings}")
+                    
+                    # 验证评分数据
+                    if not isinstance(ratings, dict):
+                        print(f"警告: {player_id} 返回的信任评分不是字典类型")
+                        ratings = {}
+                    
+                    # 记录到信任数据中
+                    trust_data["ratings"][player_id] = ratings
+                    
+                    # 打印信任评分
+                    if ratings:
+                        print(f"{self.players[player_id].name} 的信任评分:")
+                        for target_id, score in ratings.items():
+                            if target_id in self.players:
+                                print(f"- {self.players[target_id].name}: {score}/10")
+                                collection_success = True  # 至少收集到一个评分
+                    else:
+                        print(f"{self.players[player_id].name} 没有提供信任评分")
+                except Exception as e:
+                    print(f"错误: 收集 {player_id} 的信任评分时出错: {str(e)}")
+                    # 对于出错的情况，提供空评分
+                    trust_data["ratings"][player_id] = {}
+            
+            if any(ratings for ratings in trust_data["ratings"].values()):
+                # 添加到信任网络数据
+                self.trust_network_data["rounds"].append(trust_data)
+                print(f"成功收集了 {len(trust_data['ratings'])} 个玩家的信任评分")
+            else:
+                print(f"警告: 第 {self.current_round} 回合没有收集到任何信任评分")
+        except Exception as outer_e:
+            print(f"严重错误: 信任评分收集过程发生异常: {str(outer_e)}")
+            # 不再使用self.logger以避免潜在的问题
+            logging.error(f"信任评分收集过程发生异常: {str(outer_e)}")
+    
+    def save_round_data(self) -> None:
+        """保存当前回合的数据"""
+        print(f"\n=== 保存第 {self.current_round} 回合数据 ===")
+        
+        try:
+            # 检查是否已有该回合的数据
+            for existing_data in self.trust_network_data["rounds"]:
+                if (existing_data.get("round") == self.current_round and 
+                    existing_data.get("type") == "round_data"):
+                    print(f"第 {self.current_round} 回合的数据已存在，跳过保存")
+                    return
+            
+            print("构建回合数据...")
+            round_data = {
+                "type": "round_data",  # 添加类型标记便于区分
+                "round": self.current_round,
+                "timestamp": datetime.now().isoformat(),
+                "alive_players": [
+                    {
+                        "id": pid,
+                        "name": self.players[pid].name,
+                        "role": self.players[pid].role_type.value
+                    }
+                    for pid, role in self.players.items() if role.is_alive
+                ],
+                "discussions": [
+                    {
+                        "speaker": event["player"],
+                        "speaker_name": self.players[event["player"]].name if event["player"] in self.players else "未知",
+                        "content": event["content"],
+                        "timestamp": event.get("timestamp", "")
+                    }
+                    for event in self.game_state["history"]
+                    if event.get("round") == self.current_round and event.get("phase") == "discussion"
+                ],
+                "votes": [
+                    {
+                        "voter": event["player"],
+                        "voter_name": self.players[event["player"]].name if event["player"] in self.players else "未知",
+                        "target": event["target"],
+                        "target_name": self.players[event["target"]].name if event["target"] in self.players else "未知",
+                        "reason": event.get("reason", ""),
+                        "timestamp": event.get("timestamp", "")
+                    }
+                    for event in self.game_state["history"]
+                    if event.get("round") == self.current_round and event.get("phase") == "vote"
+                ]
+            }
+            
+            print("查找当前回合的信任评分数据...")
+            # 获取当前回合的信任评分
+            trust_ratings_found = False
+            for trust_data in self.trust_network_data["rounds"]:
+                if (trust_data["round"] == self.current_round and 
+                    "ratings" in trust_data and trust_data["ratings"] and
+                    trust_data.get("type") == "trust_ratings"):
+                    print(f"找到第 {self.current_round} 回合的信任评分数据")
+                    round_data["trust_ratings"] = trust_data["ratings"]
+                    trust_ratings_found = True
+                    break
+            
+            # 如果没有找到信任评分数据，添加空字典
+            if not trust_ratings_found:
+                print(f"警告: 第 {self.current_round} 回合没有找到信任评分数据")
+                round_data["trust_ratings"] = {}
+            
+            # 保存回合数据
+            print("保存回合数据到trust_network_data...")
+            self.trust_network_data["rounds"].append(round_data)
+            print(f"已保存第 {self.current_round} 回合的数据")
+        except Exception as e:
+            print(f"严重错误: 保存回合数据时出错: {str(e)}")
+            # 使用标准logging避免潜在问题
+            logging.error(f"保存回合数据时出错: {str(e)}")
+    
+    def export_game_data(self) -> None:
+        """导出游戏数据到JSON文件"""
+        try:
+            print("\n=== 导出游戏数据 ===")
+            
+            # 添加游戏结果
+            print("添加最终游戏结果...")
+            self.trust_network_data["final_result"] = {
+                "winner": "werewolf" if self.game_state.get("winner") == "werewolf" else "villager",
+                "alive_players": [
+                    {
+                        "id": pid,
+                        "name": self.players[pid].name,
+                        "role": self.players[pid].role_type.value
+                    }
+                    for pid, role in self.players.items() if role.is_alive
+                ]
+            }
+            
+            # 确保data_dir目录存在
+            if not os.path.exists(self.data_dir):
+                print(f"创建数据目录: {self.data_dir}")
+                os.makedirs(self.data_dir, exist_ok=True)
+            
+            # 生成文件名
+            filename = f"{self.data_dir}/game_{self.trust_network_data['game_id']}.json"
+            print(f"生成游戏数据文件: {filename}")
+            
+            # 统计信息
+            rounds_count = len([r for r in self.trust_network_data["rounds"] if r.get("type") == "round_data"])
+            trust_ratings_count = len([r for r in self.trust_network_data["rounds"] if r.get("type") == "trust_ratings"])
+            print(f"游戏数据统计: {rounds_count}个回合数据, {trust_ratings_count}个信任评分记录")
+            
+            # 保存数据
+            print("写入游戏数据文件...")
+            with open(filename, 'w', encoding='utf-8') as f:
+                json.dump(self.trust_network_data, f, ensure_ascii=False, indent=2)
+            
+            print(f"\n游戏数据已成功导出到: {filename}")
+        except Exception as e:
+            print(f"导出游戏数据时出错: {str(e)}")
+            logging.error(f"导出游戏数据时出错: {str(e)}")
+            raise
+    
     def night_phase(self) -> None:
         """夜晚阶段：狼人杀人，神职技能"""
         print("\n=== 夜晚降临 ===")
@@ -631,6 +936,13 @@ class GameController:
                     "content": event["content"]
                 })
         
+        # 初始化回合投票数据
+        round_vote_data = {
+            "round": self.current_round,
+            "timestamp": datetime.now().isoformat(),
+            "votes": []
+        }
+        
         for player_id in alive_players:
             role = self.players[player_id]
             agent = self.ai_agents[player_id]
@@ -708,12 +1020,27 @@ class GameController:
                             "voter_role": role.role_type.value,
                             "target": target_id,
                             "target_name": self.players[target_id].name,
+                            "target_role": self.players[target_id].role_type.value,
                             "reason": reason,
-                            "attempts": current_attempt
+                            "attempts": current_attempt,
+                            "timestamp": datetime.now().isoformat()
                         }
                         print(f"{role.name} 投票给了 {self.players[target_id].name}")
                         print(f"投票理由：{reason}")
                         vote_details.append(vote_detail)
+                        
+                        # 记录投票到游戏历史
+                        self.game_state["history"].append({
+                            "round": self.current_round,
+                            "phase": "vote",
+                            "player": player_id,
+                            "target": target_id,
+                            "content": reason,
+                            "timestamp": datetime.now().isoformat()
+                        })
+                        
+                        # 添加到回合投票数据
+                        round_vote_data["votes"].append(vote_detail)
                         
                         # 记录投票准确率
                         self._log_vote(player_id, target_id)
@@ -736,10 +1063,26 @@ class GameController:
                         "voter_role": role.role_type.value,
                         "target": target_id,
                         "target_name": self.players[target_id].name,
+                        "target_role": self.players[target_id].role_type.value,
                         "reason": "三次投票无效，系统随机指定",
-                        "attempts": current_attempt
+                        "attempts": current_attempt,
+                        "timestamp": datetime.now().isoformat()
                     }
                     vote_details.append(vote_detail)
+                    
+                    # 记录投票到游戏历史
+                    self.game_state["history"].append({
+                        "round": self.current_round,
+                        "phase": "vote",
+                        "player": player_id,
+                        "target": target_id,
+                        "content": "三次投票无效，系统随机指定",
+                        "timestamp": datetime.now().isoformat()
+                    })
+                    
+                    # 添加到回合投票数据
+                    round_vote_data["votes"].append(vote_detail)
+                    
                     self._log_vote(player_id, target_id)
                 else:
                     self.logger.warning(f"{role.name} 无法进行有效投票：没有合适的目标")
@@ -749,6 +1092,9 @@ class GameController:
                 del self.game_state["vote_context"]
             
             time.sleep(self.delay)
+
+        # 添加投票数据到信任网络数据
+        self.trust_network_data["rounds"].append(round_vote_data)
 
         # 统计投票结果
         if votes:
@@ -798,24 +1144,13 @@ class GameController:
             
             print(f"\n{self.players[voted_out].name} 被投票出局")
             
-            # 记录投票结果
-            self.game_state["history"].append({
-                "round": self.current_round,
-                "phase": "vote",
-                "votes": vote_details,
-                "result": voted_out,
-                "is_tie": len(most_voted) > 1,
-                "vote_counts": {pid: count for pid, count in votes.items()},
-                "voting_process": {
-                    "total_attempts": sum(detail["attempts"] for detail in vote_details),
-                    "invalid_votes": len([d for d in vote_details if d["attempts"] > 1]),
-                    "discussions": current_round_discussions
-                },
-                "vote_stats": self.game_state["vote_stats"]  # 添加投票统计到历史记录
-            })
+            # 记录投票结果到游戏状态
+            self.game_state["vote_results"] = vote_results
             
-            # 处理出局，允许发表遗言
-            self.kill_player(voted_out, "公投出局", allow_last_words=True)
+            # 处理玩家出局
+            self.kill_player(voted_out, "投票处决", True)
+        else:
+            print("\n本轮没有有效投票")
 
     def kill_player(self, player_id: str, reason: str, allow_last_words: bool = True) -> None:
         """处理玩家死亡
@@ -882,18 +1217,37 @@ class GameController:
 
     def announce_winner(self) -> None:
         """宣布游戏结果"""
-        if self.game_state["alive_count"]["werewolf"] == 0:
-            winner = "好人阵营"
-        else:
-            winner = "狼人阵营"
-            
-        print(f"\n=== {winner}胜利！===")
+        werewolf_alive = any(role.is_wolf() for role in self.players.values() if role.is_alive)
+        villager_alive = any(not role.is_wolf() for role in self.players.values() if role.is_alive)
         
-        # 打印存活玩家
-        print("\n存活玩家：")
+        if werewolf_alive and not villager_alive:
+            print("\n=== 游戏结束：狼人胜利！===")
+            print("所有好人都被杀死了，狼人获胜！")
+            self.game_state["winner"] = "werewolf"
+        elif not werewolf_alive:
+            print("\n=== 游戏结束：村民胜利！===")
+            print("所有狼人都被处决了，村民获胜！")
+            self.game_state["winner"] = "villager"
+        else:
+            print("\n=== 游戏结束：平局 ===")
+            print("游戏出现异常情况，判定为平局。")
+            self.game_state["winner"] = "draw"
+        
+        # 显示所有玩家的身份
+        print("\n玩家身份:")
         for player_id, role in self.players.items():
-            if role.is_alive:
-                print(f"- {role.name} ({role.role_type.value})")
+            status = "存活" if role.is_alive else "死亡"
+            print(f"- {role.name} ({player_id}): {role.role_type.value} [{status}]")
+        
+        # 记录游戏结果
+        for agent in self.ai_agents.values():
+            agent.memory.add_game_result({
+                "winner": self.game_state["winner"],
+                "player_status": {
+                    pid: {"alive": role.is_alive, "role": role.role_type.value}
+                    for pid, role in self.players.items()
+                }
+            })
         
         # 打印投票统计
         print("\n=== 投票统计 ===")
@@ -931,10 +1285,10 @@ class GameController:
             metrics = self.logger.calculate_metrics()
         
         # 设置游戏结果数据
-        self.game_state["winner"] = winner
+        self.game_state["winner"] = self.game_state["winner"]
         self.game_state["final_result"] = {
             "end_time": datetime.now().isoformat(),
-            "winner": winner,
+            "winner": self.game_state["winner"],
             "vote_stats": self.game_state["vote_stats"],
             "metrics": metrics,
             "final_state": {
@@ -948,10 +1302,10 @@ class GameController:
         self.game_state["history"].append({
             "round": self.current_round,
             "event": "game_over",
-            "winner": winner,
+            "winner": self.game_state["winner"],
             "vote_stats": self.game_state["vote_stats"]  # 添加投票统计到历史记录
         }) 
         
         # 调用logger记录游戏结束和指标数据
         if hasattr(self, 'logger') and hasattr(self.logger, 'log_game_over'):
-            self.logger.log_game_over(winner, self.game_state) 
+            self.logger.log_game_over(self.game_state["winner"], self.game_state) 

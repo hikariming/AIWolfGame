@@ -14,12 +14,15 @@ import logging
 import re
 from .roles import BaseRole, RoleType
 import random
+from datetime import datetime
 
 class Memory:
     def __init__(self):
         self.conversations: List[Dict] = []  # 所有对话记录
         self.game_results: List[Dict] = []   # 每轮游戏结果
         self.current_round_discussions: List[Dict] = []  # 当前回合的讨论记录
+        self.trust_ratings: Dict[str, List[Dict]] = {}  # 添加信任评分记录
+        self.vote_history: List[Dict] = []  # 添加投票历史记录
 
     def add_conversation(self, conversation: Dict):
         """添加对话记录
@@ -33,6 +36,73 @@ class Memory:
 
     def add_game_result(self, result: Dict):
         self.game_results.append(result)
+    
+    def add_trust_rating(self, rater_id: str, ratings: Dict[str, int], round_num: int):
+        """添加信任评分
+        
+        Args:
+            rater_id: 评分者ID
+            ratings: 包含被评分者ID和评分(0-10)的字典
+            round_num: 游戏轮次
+        """
+        if rater_id not in self.trust_ratings:
+            self.trust_ratings[rater_id] = []
+            
+        timestamp = datetime.now().isoformat()
+        for target_id, rating in ratings.items():
+            self.trust_ratings[rater_id].append({
+                "target": target_id,
+                "rating": rating,
+                "round": round_num,
+                "timestamp": timestamp
+            })
+    
+    def add_vote(self, voter_id: str, target_id: str, reason: str, round_num: int):
+        """添加投票记录
+        
+        Args:
+            voter_id: 投票者ID
+            target_id: 被投票者ID
+            reason: 投票理由
+            round_num: 游戏轮次
+        """
+        self.vote_history.append({
+            "voter": voter_id,
+            "target": target_id,
+            "reason": reason,
+            "round": round_num,
+            "timestamp": datetime.now().isoformat()
+        })
+    
+    def get_trust_ratings_for_round(self, round_num: int) -> Dict[str, Dict[str, int]]:
+        """获取指定轮次所有玩家的信任评分
+        
+        Args:
+            round_num: 游戏轮次
+            
+        Returns:
+            Dict: 评分者ID -> {被评分者ID -> 评分}
+        """
+        result = {}
+        for rater_id, ratings in self.trust_ratings.items():
+            round_ratings = {}
+            for rating in ratings:
+                if rating["round"] == round_num:
+                    round_ratings[rating["target"]] = rating["rating"]
+            if round_ratings:
+                result[rater_id] = round_ratings
+        return result
+    
+    def get_vote_history_for_round(self, round_num: int) -> List[Dict]:
+        """获取指定轮次的投票历史
+        
+        Args:
+            round_num: 游戏轮次
+            
+        Returns:
+            List[Dict]: 该轮次的投票记录列表
+        """
+        return [vote for vote in self.vote_history if vote["round"] == round_num]
 
     def get_current_round_discussions(self) -> List[Dict]:
         """获取当前回合的所有讨论"""
@@ -217,6 +287,10 @@ class BaseAIAgent:
             if alive_players:
                 target = random.choice(alive_players)
         
+        # 记录投票
+        if target:
+            self.memory.add_vote(self.role.player_id, target, response, game_state["current_round"])
+        
         return {
             "target": target,
             "reason": response
@@ -333,6 +407,192 @@ class BaseAIAgent:
         
         例如良好的投票格式：
         "经过分析，我认为player3的行为最为可疑，他在第二轮的发言中自相矛盾，而且...（分析原因）...因此我选择[player3]"
+        """
+
+    def evaluate_trust(self, game_state: Dict[str, Any]) -> Dict[str, int]:
+        """评估对其他玩家的信任度
+        
+        Args:
+            game_state: 当前游戏状态
+            
+        Returns:
+            Dict[str, int]: 玩家ID -> 信任度评分 (0-10)
+        """
+        prompt = self._generate_trust_evaluation_prompt(game_state)
+        response = self.ask_ai(prompt, self._get_trust_evaluation_prompt())
+        
+        # 尝试从响应中提取信任评分
+        trust_ratings = self._extract_trust_ratings(response, game_state)
+        
+        # 记录信任评分
+        self.memory.add_trust_rating(self.role.player_id, trust_ratings, game_state["current_round"])
+        
+        return trust_ratings
+    
+    def _extract_trust_ratings(self, response: str, game_state: Dict[str, Any]) -> Dict[str, int]:
+        """从AI回复中提取信任评分
+        
+        Args:
+            response: AI回复文本
+            game_state: 当前游戏状态
+            
+        Returns:
+            Dict[str, int]: 玩家ID -> 信任度评分 (0-10)
+        """
+        trust_ratings = {}
+        
+        # 获取所有存活的玩家(除了自己)
+        alive_players = [pid for pid, info in game_state["players"].items() 
+                        if info["is_alive"] and pid != self.role.player_id]
+        
+        if not alive_players:
+            self.logger.warning("没有其他存活玩家可评分")
+            return trust_ratings
+            
+        self.logger.debug(f"AI回复: {response}")
+        self.logger.debug(f"存活玩家: {alive_players}")
+        
+        try:
+            # 使用多个正则表达式模式匹配不同格式的信任评分
+            patterns = [
+                r'([a-zA-Z]+\d+)[\s\:：]*(\d+)',                  # player1: 7
+                r'对[\s]*([a-zA-Z]+\d+)[\s\:：]*评分[\s\:：]*(\d+)',  # 对player1评分: 7
+                r'([a-zA-Z]+\d+)[\s\:：]+\D*?(\d+)[\s/分]*',      # player1: 信任度 7分
+                r'信任度[\s\:：]*([a-zA-Z]+\d+)[\s\:：]*(\d+)'     # 信任度player1: 7
+            ]
+            
+            # 尝试所有模式
+            all_matches = []
+            for pattern in patterns:
+                matches = re.findall(pattern, response)
+                all_matches.extend(matches)
+                
+            # 如果找到匹配项，处理它们
+            for pid, score in all_matches:
+                pid = pid.strip()
+                if pid in alive_players:
+                    try:
+                        score_int = int(score.strip())
+                        # 确保分数在0-10范围内
+                        if 0 <= score_int <= 10:
+                            trust_ratings[pid] = score_int
+                            self.logger.debug(f"找到评分: {pid} -> {score_int}")
+                    except ValueError:
+                        self.logger.warning(f"无法将 {score} 转换为有效的信任评分")
+            
+            # 如果没有找到任何评分，尝试逐行分析
+            if not trust_ratings:
+                self.logger.warning("使用正则表达式未找到信任评分，尝试逐行分析")
+                
+                # 将响应分成行
+                lines = response.strip().split('\n')
+                for line in lines:
+                    line = line.strip()
+                    # 跳过空行
+                    if not line:
+                        continue
+                        
+                    # 查找包含player ID的行
+                    for player_id in alive_players:
+                        if player_id in line:
+                            # 查找该行中的数字
+                            numbers = re.findall(r'\b(\d+)\b', line)
+                            if numbers:
+                                for num in numbers:
+                                    try:
+                                        score_int = int(num)
+                                        if 0 <= score_int <= 10:
+                                            trust_ratings[player_id] = score_int
+                                            self.logger.debug(f"从行分析中找到评分: {player_id} -> {score_int}")
+                                            break
+                                    except ValueError:
+                                        continue
+            
+            # 如果仍然没有找到任何评分，为所有人随机生成
+            if not trust_ratings:
+                self.logger.warning("无法从响应中提取信任评分，随机生成")
+                for pid in alive_players:
+                    trust_ratings[pid] = random.randint(3, 8)  # 使用更中性的随机范围
+                    self.logger.debug(f"随机生成评分: {pid} -> {trust_ratings[pid]}")
+                    
+        except Exception as e:
+            self.logger.error(f"提取信任评分时出错: {str(e)}")
+            # 出错时随机生成
+            for pid in alive_players:
+                trust_ratings[pid] = random.randint(3, 8)  # 使用更中性的随机范围
+                
+        # 记录最终结果
+        self.logger.info(f"提取到的信任评分: {trust_ratings}")
+        return trust_ratings
+    
+    def _generate_trust_evaluation_prompt(self, game_state: Dict[str, Any]) -> str:
+        """生成评估其他玩家信任度的提示词
+        
+        Args:
+            game_state: 当前游戏状态
+            
+        Returns:
+            str: 提示词
+        """
+        # 生成存活玩家列表
+        alive_players = []
+        for pid, info in game_state['players'].items():
+            if info['is_alive'] and pid != self.role.player_id:
+                alive_players.append(f"{info['name']}({pid})")
+        
+        # 避免没有玩家可评分的情况
+        if not alive_players:
+            return "没有其他存活玩家可以评分。"
+            
+        prompt = f"""
+        当前游戏状态:
+        - 回合: {game_state["current_round"]}
+        - 存活玩家: {alive_players}
+        - 你的身份: {self.role.role_type.value} {self.role.name}
+        
+        历史记录:
+        {self.memory.get_all_conversations()}
+        
+        请对每个存活的玩家进行信任度评估(除了你自己)，范围从0分(完全不信任)到10分(完全信任)。
+        
+        【评分格式要求】（非常重要，必须严格遵守）:
+        1. 必须为每个玩家单独评分
+        2. 严格使用"玩家ID: 评分"的格式，例如"player1: 7"
+        3. 评分必须是0-10的整数
+        4. 每个玩家单独一行
+        5. 评分后可以添加简短解释
+        
+        请按照以下格式回答:
+        
+        player1: 8 - 因为他的发言逻辑清晰，投票一致性高
+        player2: 3 - 因为他经常自相矛盾，行为可疑
+        
+        请对以下玩家进行评分:
+        {chr(10).join(alive_players)}
+        """
+        return prompt
+    
+    def _get_trust_evaluation_prompt(self) -> str:
+        """获取信任评估的系统提示词"""
+        return """你正在评估游戏中其他玩家的可信度。你必须严格按照要求的格式输出信任评分。
+        
+        评分考虑因素:
+        1. 发言的一致性和逻辑性
+        2. 投票行为是否可疑
+        3. 与你的判断是否一致
+        4. 是否有欺骗或隐瞒的迹象
+        
+        【格式要求】:
+        1. 每个玩家必须使用"playerX: Y"格式评分，其中X是玩家ID，Y是0-10的整数评分
+        2. 每个玩家单独一行
+        3. 评分后可以简短解释原因，但格式必须保持
+        4. 不要添加任何额外的格式或修饰
+        
+        例如:
+        player1: 8 - 他的发言很有逻辑
+        player2: 3 - 他的行为很可疑
+        
+        注意: 所有评分必须严格遵循上述格式，否则系统将无法正确解析你的评分。
         """
 
 class WerewolfAgent(BaseAIAgent):

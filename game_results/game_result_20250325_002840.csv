@@ -1,0 +1,9 @@
+game_id,timestamp,winner,total_rounds,player_id,player_name,role,ai_model,is_alive,is_winner,role_recognition_accuracy,deception_success_rate,voting_accuracy,communication_effectiveness,survival_rate,ability_usage_accuracy
+game_20250325_002840,20250325_002840,draw,0,player1,张大胆,werewolf,claude35,是,否,1.0,1.0,0.46153846153846156,1.0,2.0,1.0
+game_20250325_002840,20250325_002840,draw,0,player2,李勇,werewolf,deepseekv3,否,否,1.0,1.0,0.46153846153846156,1.0,2.0,1.0
+game_20250325_002840,20250325_002840,draw,0,player3,王智,seer,Qwen25,否,否,1.0,1.0,0.46153846153846156,1.0,2.0,1.0
+game_20250325_002840,20250325_002840,draw,0,player4,赵灵,witch,qwen-max-latest,否,否,1.0,1.0,0.46153846153846156,1.0,2.0,1.0
+game_20250325_002840,20250325_002840,draw,0,player5,钱强,hunter,Doubao-pro-128k,否,否,1.0,1.0,0.46153846153846156,1.0,2.0,1.0
+game_20250325_002840,20250325_002840,draw,0,player6,孙一,villager,o3-mini,否,否,1.0,1.0,0.46153846153846156,1.0,2.0,1.0
+game_20250325_002840,20250325_002840,draw,0,player7,周二,villager,gemini-flash,否,否,1.0,1.0,0.46153846153846156,1.0,2.0,1.0
+game_20250325_002840,20250325_002840,draw,0,player8,吴三,villager,gemini-pro,是,否,1.0,1.0,0.46153846153846156,1.0,2.0,1.0
